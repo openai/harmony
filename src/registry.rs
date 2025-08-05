@@ -66,6 +66,8 @@ pub fn load_harmony_encoding(name: HarmonyEncodingName) -> anyhow::Result<Harmon
                     (FormattingToken::EndMessageAssistantToTool, "<|call|>"),
                     (FormattingToken::BeginUntrusted, "<|untrusted|>"),
                     (FormattingToken::EndUntrusted, "<|end_untrusted|>"),
+                    (FormattingToken::MetaSep, "<|meta_sep|>"),
+                    (FormattingToken::MetaEnd, "<|meta_end|>"),
                 ]),
                 stop_formatting_tokens: HashSet::from([
                     FormattingToken::EndMessageDoneSampling,
@@ -107,6 +109,8 @@ pub async fn load_harmony_encoding(name: HarmonyEncodingName) -> anyhow::Result<
                     (FormattingToken::EndMessageAssistantToTool, "<|call|>"),
                     (FormattingToken::BeginUntrusted, "<|untrusted|>"),
                     (FormattingToken::EndUntrusted, "<|end_untrusted|>"),
+                    (FormattingToken::MetaSep, "<|meta_sep|>"),
+                    (FormattingToken::MetaEnd, "<|meta_end|>"),
                 ]),
                 stop_formatting_tokens: HashSet::from([
                     FormattingToken::EndMessageDoneSampling,

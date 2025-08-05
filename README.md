@@ -86,7 +86,7 @@ convo = Conversation.from_messages([
     Message.from_role_and_content(
         Role.DEVELOPER,
         DeveloperContent.new().with_instructions("Talk like a pirate!")
-    )
+    ),
     Message.from_role_and_content(Role.USER, "Arrr, how be you?"),
 ])
 tokens = enc.render_conversation_for_completion(convo, Role.ASSISTANT)

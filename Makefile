@@ -1,5 +1,5 @@
 .PHONY: javascript
-js:
+javascript:
 	# Browser ESM build
 	wasm-pack build --target web --out-dir javascript/dist/web --features wasm-binding --no-default-features
 

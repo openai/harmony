@@ -306,6 +306,13 @@ impl PyStreamableParser {
             .map_err(|e| PyErr::new::<HarmonyError, _>(e.to_string()))
     }
 
+    fn process_eos(&mut self) -> PyResult<()> {
+        self.inner
+            .process_eos()
+            .map(|_| ())
+            .map_err(|e| PyErr::new::<HarmonyError, _>(e.to_string()))
+    }
+
     #[getter]
     fn current_content(&self) -> PyResult<String> {
         self.inner

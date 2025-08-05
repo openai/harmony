@@ -29,7 +29,7 @@ from typing import (
 )
 
 import re
-from pydantic import BaseModel, Field, root_validator, validator
+from pydantic import BaseModel, Field
 
 # Re-export the low-level Rust bindings under a private name so that we can
 # keep the *public* namespace clean and purely Pythonic.
@@ -610,6 +610,10 @@ class StreamableParser:
 
     def process(self, token: int) -> "StreamableParser":
         self._inner.process(token)
+        return self
+
+    def process_eos(self) -> "StreamableParser":
+        self._inner.process_eos()
         return self
 
     @property

@@ -12,6 +12,8 @@ classifiers = [
 ]
 dynamic = ["version"]
 dependencies = ["pydantic>=2.11.7"]
+description = "OpenAI's response format for its open-weight model series gpt-oss"
+readme = "README.md"
 
 [project.optional-dependencies]
 demo = ["uvicorn", "fastapi"]
@@ -20,3 +22,7 @@ demo = ["uvicorn", "fastapi"]
 features = ["pyo3/extension-module"]
 module-name = "openai_harmony"
 python-source = "python"
+
+[tool.pytest.ini_options]
+# Only collect tests from the top-level tests directory
+testpaths = ["tests"]

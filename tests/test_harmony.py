@@ -34,7 +34,6 @@ from openai_harmony import (  # noqa: E402
     StreamableParser,
     SystemContent,
     ToolDescription,
-    ToolNamespaceConfig,
     load_harmony_encoding,
 )
 from pydantic import ValidationError
@@ -245,23 +244,18 @@ def test_tool_call_with_constrain_marker_adjacent(encoding_name):
     correctly and instead handle it as a separate content type.
     """
     encoding = load_harmony_encoding(encoding_name)
-
     text = (
         "<|start|>assistant to=functions.get_weather<|channel|>commentary"
         '<|constrain|>json<|message|>{"location": "Tokyo"}<|end|>'
     )
-
     tokens = encoding.encode(text, allowed_special="all")
-
-    parsed = encoding.parse_messages_from_completion_tokens(tokens, role=Role.ASSISTANT)
-
+    parsed = encoding.parse_messages_from_completion_tokens(tokens, role=None)
     expected = [
         Message.from_role_and_content(Role.ASSISTANT, '{"location": "Tokyo"}')
         .with_channel("commentary")
         .with_recipient("functions.get_weather")
         .with_content_type("<|constrain|>json"),
     ]
-
     assert parsed == expected
 
 
@@ -280,11 +274,8 @@ def test_tool_call_with_channel_before_recipient_and_constrain_adjacent(
         "<|start|>assistant<|channel|>commentary to=functions.get_weather"
         '<|constrain|>json<|message|>{"latitude":48.8566,"longitude":2.3522}<|call|>'
     )
-
     tokens = encoding.encode(text, allowed_special="all")
-
-    parsed = encoding.parse_messages_from_completion_tokens(tokens, role=Role.ASSISTANT)
-
+    parsed = encoding.parse_messages_from_completion_tokens(tokens, role=None)
     expected = [
         Message.from_role_and_content(
             Role.ASSISTANT, '{"latitude":48.8566,"longitude":2.3522}'

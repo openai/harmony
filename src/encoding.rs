@@ -68,7 +68,7 @@ impl FormattingToken {
             FormattingToken::Channel => "<|channel|>",
             FormattingToken::BeginUntrusted => "<|untrusted|>",
             FormattingToken::EndUntrusted => "<|end_untrusted|>",
-            FormattingToken::MetaSep => "<|channel|>",
+            FormattingToken::MetaSep => "<|meta_sep|>",
             FormattingToken::MetaEnd => "<|meta_end|>",
         }
     }

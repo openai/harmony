@@ -60,7 +60,7 @@ if not TYPE_CHECKING:
         _PyHarmonyEncoding = _Stub()
         _PyStreamableParser = _Stub()
         _HarmonyError = RuntimeError
-else:  # pragma: no branch
+else:  # pragma: no branch - TYPE_CHECKING is always False at runtime
     from .openai_harmony import (
         HarmonyError as HarmonyError,  # expose the actual Rust error directly
     )

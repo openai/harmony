@@ -13,8 +13,10 @@ from __future__ import annotations
 
 import functools
 import json
+import re
 from enum import Enum
 from typing import (
+    TYPE_CHECKING,
     AbstractSet,
     Any,
     Collection,
@@ -28,40 +30,43 @@ from typing import (
     Union,
 )
 
-import re
 from pydantic import BaseModel, Field
 
-# Re-export the low-level Rust bindings under a private name so that we can
-# keep the *public* namespace clean and purely Pythonic.
-try:
+if not TYPE_CHECKING:
+    # Re-export the low-level Rust bindings under a private name so that we can
+    # keep the *public* namespace clean and purely Pythonic.
+    try:
+        from .openai_harmony import (
+            HarmonyError as HarmonyError,  # expose the actual Rust error directly
+        )
+        from .openai_harmony import PyHarmonyEncoding as _PyHarmonyEncoding
+        from .openai_harmony import PyStreamableParser as _PyStreamableParser
+        from .openai_harmony import load_harmony_encoding as _load_harmony_encoding
+
+    except ModuleNotFoundError:  # pragma: no cover – raised during type-checking
+        # When running *mypy* without the compiled extension in place we still want
+        # to succeed.  Therefore we create dummy stubs that satisfy the type
+        # checker.  They will, however, raise at **runtime** if accessed.
+
+        class _Stub:  # pylint: disable=too-few-public-methods
+            def __getattr__(self, name: str) -> None:  # noqa: D401
+                raise RuntimeError(
+                    "The compiled harmony bindings are not available. Make sure to "
+                    "build the project with `maturin develop` before running this "
+                    "code."
+                )
+
+        _load_harmony_encoding = _Stub()
+        _PyHarmonyEncoding = _Stub()
+        _PyStreamableParser = _Stub()
+        _HarmonyError = RuntimeError
+else:  # pragma: no branch
     from .openai_harmony import (
         HarmonyError as HarmonyError,  # expose the actual Rust error directly
     )
-    from .openai_harmony import PyHarmonyEncoding as _PyHarmonyEncoding  # type: ignore
-    from .openai_harmony import (
-        PyStreamableParser as _PyStreamableParser,  # type: ignore
-    )
-    from .openai_harmony import (
-        load_harmony_encoding as _load_harmony_encoding,  # type: ignore
-    )
-
-except ModuleNotFoundError:  # pragma: no cover – raised during type-checking
-    # When running *mypy* without the compiled extension in place we still want
-    # to succeed.  Therefore we create dummy stubs that satisfy the type
-    # checker.  They will, however, raise at **runtime** if accessed.
-
-    class _Stub:  # pylint: disable=too-few-public-methods
-        def __getattr__(self, name: str) -> None:  # noqa: D401
-            raise RuntimeError(
-                "The compiled harmony bindings are not available. Make sure to "
-                "build the project with `maturin develop` before running this "
-                "code."
-            )
-
-    _load_harmony_encoding = _Stub()  # type: ignore
-    _PyHarmonyEncoding = _Stub()  # type: ignore
-    _PyStreamableParser = _Stub()  # type: ignore
-    _HarmonyError = RuntimeError
+    from .openai_harmony import PyHarmonyEncoding as _PyHarmonyEncoding
+    from .openai_harmony import PyStreamableParser as _PyStreamableParser
+    from .openai_harmony import load_harmony_encoding as _load_harmony_encoding
 
 
 def _special_token_regex(tokens: frozenset[str]) -> Pattern[str]:
@@ -441,7 +446,7 @@ class HarmonyEncoding:
 
     @property
     def name(self) -> str:  # noqa: D401
-        return self._inner.name  # type: ignore[attr-defined]
+        return self._inner.name
 
     @functools.cached_property
     def special_tokens_set(self) -> set[str]:
@@ -679,7 +684,7 @@ class StreamableParser:
 # Public helper --------------------------------------------------------------
 
 
-def load_harmony_encoding(name: str | "HarmonyEncodingName") -> HarmonyEncoding:  # type: ignore[name-defined]
+def load_harmony_encoding(name: str | "HarmonyEncodingName") -> HarmonyEncoding:
     """Load an encoding by *name* (delegates to the Rust implementation)."""
 
     # Allow both strings and enum values.

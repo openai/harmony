@@ -36,13 +36,10 @@ from pydantic import BaseModel, Field
 try:
     from .openai_harmony import (
         HarmonyError as HarmonyError,  # expose the actual Rust error directly
-    )
-    from .openai_harmony import PyHarmonyEncoding as _PyHarmonyEncoding  # type: ignore
-    from .openai_harmony import (
+        PyHarmonyEncoding as _PyHarmonyEncoding,  # type: ignore
         PyStreamableParser as _PyStreamableParser,  # type: ignore
-    )
-    from .openai_harmony import (
         load_harmony_encoding as _load_harmony_encoding,  # type: ignore
+        load_harmony_encoding_from_file as _load_harmony_encoding_from_file,  # type: ignore
     )
 
 except ModuleNotFoundError:  # pragma: no cover – raised during type-checking
@@ -690,6 +687,32 @@ def load_harmony_encoding(name: str | "HarmonyEncodingName") -> HarmonyEncoding:
     return HarmonyEncoding(inner)
 
 
+def load_harmony_encoding_from_file(
+    name: str,
+    vocab_file: str,
+    special_tokens: list[tuple[str, int]],
+    pattern: str,
+    n_ctx: int,
+    max_message_tokens: int,
+    max_action_length: int,
+    expected_hash: str | None = None,
+) -> HarmonyEncoding:
+    """Load a HarmonyEncoding from a local vocab file (offline usage).
+    Use this when network access is restricted or for reproducible builds where you want to avoid remote downloads.
+    """
+    inner: _PyHarmonyEncoding = _load_harmony_encoding_from_file(
+        name,
+        vocab_file,
+        special_tokens,
+        pattern,
+        n_ctx,
+        max_message_tokens,
+        max_action_length,
+        expected_hash,
+    )
+    return HarmonyEncoding(inner)
+
+
 # For *mypy* we expose a minimal stub of the `HarmonyEncodingName` enum.  At
 # **runtime** the user is expected to pass the *string* names because the Rust
 # side only operates on strings anyway.
@@ -718,4 +741,5 @@ __all__ = [
     "StreamableParser",
     "StreamState",
     "HarmonyError",
+    "load_harmony_encoding_from_file",
 ]

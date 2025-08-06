@@ -396,6 +396,38 @@ fn openai_harmony(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     }
     m.add_function(pyo3::wrap_pyfunction!(load_harmony_encoding_py, m)?)?;
 
+    // Convenience function to load a HarmonyEncoding from a local vocab file for offline
+    // scenarios or reproducible builds where remote download is not possible.
+    #[pyfunction(name = "load_harmony_encoding_from_file")]
+    fn load_harmony_encoding_from_file_py(
+        py: Python<'_>,
+        name: &str,
+        vocab_file: &str,
+        special_tokens: Vec<(String, u32)>,
+        pattern: &str,
+        n_ctx: usize,
+        max_message_tokens: usize,
+        max_action_length: usize,
+        expected_hash: Option<&str>,
+    ) -> PyResult<Py<PyHarmonyEncoding>> {
+        let encoding = HarmonyEncoding::from_local_file(
+            name.to_string(),
+            std::path::Path::new(vocab_file),
+            expected_hash,
+            special_tokens,
+            pattern,
+            n_ctx,
+            max_message_tokens,
+            max_action_length,
+        )
+        .map_err(|e| PyErr::new::<HarmonyError, _>(e.to_string()))?;
+        Py::new(py, PyHarmonyEncoding { inner: encoding })
+    }
+    m.add_function(pyo3::wrap_pyfunction!(
+        load_harmony_encoding_from_file_py,
+        m
+    )?)?;
+
     // Convenience functions to get the tool configs for the browser and python tools.
     #[pyfunction]
     fn get_tool_namespace_config(py: Python<'_>, tool: &str) -> PyResult<PyObject> {

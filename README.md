@@ -42,7 +42,9 @@ location: string,
 format?: "celsius" | "fahrenheit", // default: celsius
 }) => any;
 
-} // namespace functions<|end|><|start|>user<|message|>What is the weather like in SF?<|end|><|start|>assistant
+} // namespace functions<|end|>
+
+<|start|>user<|message|>What is the weather like in SF?<|end|><|start|>assistant
 ```
 
 We recommend using this library when working with models that use the [harmony response format][harmony-format]

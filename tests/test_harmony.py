@@ -239,6 +239,36 @@ def test_simple_tool_call(encoding_name):
         HarmonyEncodingName.HARMONY_GPT_OSS,
     ],
 )
+def test_tool_call_with_constrain_tokenized_correctly(encoding_name):
+    """
+    Despite passing <|constrain|> as a string in "content_type" it has to be kept as a special token.
+    """
+    encoding = load_harmony_encoding(encoding_name)
+    text = (
+        "<|start|>assistant to=functions.get_weather<|channel|>commentary"
+        ' <|constrain|>json<|message|>{"location": "Tokyo"}<|call|>'
+    )
+    tokens = encoding.encode(text, allowed_special="all")
+    parsed = encoding.parse_messages_from_completion_tokens(tokens, role=None)
+    expected = [
+        Message.from_role_and_content(Role.ASSISTANT, '{"location": "Tokyo"}')
+        .with_channel("commentary")
+        .with_recipient("functions.get_weather")
+        .with_content_type("<|constrain|>json"),
+    ]
+    assert parsed == expected
+
+    rendered = encoding.render_conversation(Conversation.from_messages(expected))
+    assert text == encoding.decode_utf8(tokens)
+    assert rendered == tokens
+
+
+@pytest.mark.parametrize(
+    "encoding_name",
+    [
+        HarmonyEncodingName.HARMONY_GPT_OSS,
+    ],
+)
 def test_tool_call_with_constrain_marker_adjacent(encoding_name):
     """
     There are moments where the model might not output a space before constrain resulting in the
@@ -248,7 +278,7 @@ def test_tool_call_with_constrain_marker_adjacent(encoding_name):
     encoding = load_harmony_encoding(encoding_name)
     text = (
         "<|start|>assistant to=functions.get_weather<|channel|>commentary"
-        '<|constrain|>json<|message|>{"location": "Tokyo"}<|end|>'
+        '<|constrain|>json<|message|>{"location": "Tokyo"}<|call|>'
     )
     tokens = encoding.encode(text, allowed_special="all")
     parsed = encoding.parse_messages_from_completion_tokens(tokens, role=None)
@@ -702,6 +732,8 @@ def test_does_not_drop_if_ongoing_analysis():
     )
 
     assert encoding.decode_utf8(tokens) == expected_output
+    # ensure that <|constrain|>json part is tokenized correctly as special tokens
+    assert encoding.encode(expected_output, allowed_special="all") == tokens
 
 
 def test_preserve_cot():

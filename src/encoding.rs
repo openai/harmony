@@ -820,17 +820,17 @@ impl Render<Message> for HarmonyEncoding {
             }
         };
 
+        // next header channel
+        if let Some(channel) = &message.channel {
+            self.render_formatting_token_into(FormattingToken::Channel, into)?;
+            self.render_text_into(channel, into)?;
+        }
+
         // next render the header recipient, if there is one
         if let Some(recipient) = &message.recipient {
             if recipient != "all" {
                 self.render_text_into(format!(" to={recipient}"), into)?;
             }
-        }
-
-        // next header channel
-        if let Some(channel) = &message.channel {
-            self.render_formatting_token_into(FormattingToken::Channel, into)?;
-            self.render_text_into(channel, into)?;
         }
 
         // finally content type

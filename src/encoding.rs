@@ -839,11 +839,10 @@ impl Render<Message> for HarmonyEncoding {
             if let Some(constrain_marker) =
                 self.mapped_format_token(FormattingToken::ConstrainedFormat)
             {
-                if content_type.starts_with(constrain_marker) {
+                if let Some(rest) = content_type.strip_prefix(constrain_marker) {
                     // Render the space, then the constrain marker as a special token, then the rest as text (if any)
                     self.render_text_into(" ", into)?;
                     self.render_formatting_token_into(FormattingToken::ConstrainedFormat, into)?;
-                    let rest = &content_type[constrain_marker.len()..];
                     if !rest.is_empty() {
                         self.render_text_into(rest, into)?;
                     }

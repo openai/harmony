@@ -154,6 +154,31 @@ impl HarmonyEncoding {
             })
             .collect()
     }
+
+    pub fn from_local_file(
+        name: String,
+        vocab_file: &std::path::Path,
+        expected_hash: Option<&str>,
+        special_tokens: impl IntoIterator<Item = (String, u32)>,
+        pattern: &str,
+        n_ctx: usize,
+        max_message_tokens: usize,
+        max_action_length: usize,
+    ) -> anyhow::Result<Self> {
+        use crate::tiktoken_ext::public_encodings::load_encoding_from_file;
+        let bpe = load_encoding_from_file(vocab_file, expected_hash, special_tokens, pattern)?;
+        Ok(HarmonyEncoding {
+            name,
+            n_ctx,
+            max_message_tokens,
+            max_action_length,
+            tokenizer_name: vocab_file.display().to_string(),
+            tokenizer: std::sync::Arc::new(bpe),
+            format_token_mapping: Default::default(),
+            stop_formatting_tokens: Default::default(),
+            stop_formatting_tokens_for_assistant_actions: Default::default(),
+        })
+    }
 }
 
 // Methods for rendering conversations

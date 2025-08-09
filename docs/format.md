@@ -64,7 +64,7 @@ system_message = (
 developer_message = (
     DeveloperContent.new()
         .with_instructions("Always respond in riddles")
-        .with_tools(
+        .with_function_tools(
             [
                 ToolDescription.new(
                     "get_current_weather",

@@ -7,14 +7,18 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "build:wasm": "cd ../../ && wasm-pack build --target web --out-dir javascript/dist/web --features wasm-binding --no-default-features && wasm-pack build --target nodejs --out-dir javascript/dist/node --features wasm-binding --no-default-features"
   },
   "dependencies": {
     "@openai/harmony": "file:../../javascript",
     "@radix-ui/react-collapsible": "^1.1.11",
     "@radix-ui/react-label": "^2.1.7",
+    "@radix-ui/react-popover": "^1.1.14",
+    "@radix-ui/react-select": "^2.2.5",
     "@radix-ui/react-slot": "^1.2.3",
     "@radix-ui/react-switch": "^1.2.5",
+    "@radix-ui/react-tabs": "^1.1.12",
     "@radix-ui/react-tooltip": "^1.2.7",
     "@tanstack/react-query": "^5.83.0",
     "class-variance-authority": "^0.7.1",

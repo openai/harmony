@@ -116,7 +116,6 @@ pub async fn load_harmony_encoding(name: HarmonyEncodingName) -> anyhow::Result<
                     FormattingToken::EndMessageDoneSampling,
                     FormattingToken::EndMessageAssistantToTool,
                 ]),
-                conversation_has_function_tools: Arc::new(AtomicBool::new(false)),
             })
         }
     }

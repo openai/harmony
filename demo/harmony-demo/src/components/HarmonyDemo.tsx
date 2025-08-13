@@ -13,10 +13,23 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 import {
   load_harmony_encoding,
   type JsHarmonyEncoding,
+  type Message as HarmonyMessage,
   initSync as initHarmony,
   JsStreamableParser,
 } from "@openai/harmony";
@@ -213,18 +226,58 @@ function HighlightedTokens({
   );
 }
 
-type Message = {
-  role: "assistant" | "user" | "system" | "developer" | "tool";
-  channel?: string;
-  recipient?: string;
-  content_type?: string;
-  content: {
-    type: "text";
-    text: string;
-  }[];
-};
+type Message = HarmonyMessage;
 
-function MessageItem({ message }: { message: Message }) {
+function MessageItem({
+  message,
+  onUpdateContent,
+  onUpdateHeader,
+}: {
+  message: Message;
+  onUpdateContent?: (contentIndex: number, newText: string) => void;
+  onUpdateHeader?: (updates: Partial<Message>) => void;
+}) {
+  const [isHeaderOpen, setIsHeaderOpen] = useState(false);
+  const [draft, setDraft] = useState<Message>(message);
+
+  useEffect(() => {
+    if (isHeaderOpen) {
+      setDraft(message);
+    }
+  }, [isHeaderOpen, message]);
+
+  const commitHeaderUpdates = () => {
+    const normalize = (val?: string) =>
+      val && val.trim().length > 0 ? val.trim() : undefined;
+    const nextAuthor = {
+      role: draft.author.role,
+      name: normalize(draft.author?.name),
+    } as Message["author"];
+    let nextRecipient = normalize(draft.recipient);
+    if (nextAuthor.role === "tool" && !nextRecipient)
+      nextRecipient = "assistant";
+    onUpdateHeader?.({
+      author: nextAuthor,
+      channel: normalize(draft.channel),
+      recipient: nextRecipient,
+      content_type: normalize(draft.content_type),
+    });
+  };
+  const adjustTextareaSize = (el: HTMLTextAreaElement) => {
+    const style = window.getComputedStyle(el);
+    const lineHeight = parseFloat(style.lineHeight || "16");
+    const paddingTop = parseFloat(style.paddingTop || "0");
+    const paddingBottom = parseFloat(style.paddingBottom || "0");
+    const oneLineHeight = lineHeight + paddingTop + paddingBottom;
+    const maxHeight = lineHeight * 5 + paddingTop + paddingBottom;
+
+    el.style.height = "auto";
+    const desired = Math.max(oneLineHeight, el.scrollHeight);
+    const nextHeight = Math.min(desired, maxHeight);
+    el.style.height = `${nextHeight}px`;
+    el.style.overflowY = desired > maxHeight ? "auto" : "hidden";
+  };
+
   return (
     <div className="text-sm border rounded-md p-1">
       <div className="border border-dashed border-gray-300 rounded-md">
@@ -241,49 +294,198 @@ function MessageItem({ message }: { message: Message }) {
             </CollapsibleTrigger>
           </div>
           <CollapsibleContent>
-            <div className="p-2 flex flex-col gap-1 mt-1">
-              <dl className="text-xs flex gap-1">
-                <dt>role:</dt>
-                <dd className="font-semibold bg-blue-300/50 px-1 rounded-sm">
-                  {message.role}
-                </dd>
-              </dl>
-              {message.channel && (
-                <dl className="text-xs flex gap-1">
-                  <dt>content:</dt>
-                  <dd className="font-semibold bg-blue-300/50 px-1 rounded-sm">
-                    {message.channel}
-                  </dd>
-                </dl>
-              )}
-              {message.recipient && (
-                <dl className="text-xs flex gap-1">
-                  <dt>recipient:</dt>
-                  <dd className="font-semibold bg-blue-300/50 px-1 rounded-sm">
-                    {message.recipient}
-                  </dd>
-                </dl>
-              )}
-              {message.content_type && (
-                <dl className="text-xs flex gap-1">
-                  <dt>content_type:</dt>
-                  <dd className="font-semibold bg-blue-300/50 px-1 rounded-sm">
-                    {message.content_type}
-                  </dd>
-                </dl>
-              )}
-            </div>
+            <Popover
+              open={isHeaderOpen}
+              onOpenChange={(open) => {
+                if (!open && isHeaderOpen) {
+                  commitHeaderUpdates();
+                }
+                setIsHeaderOpen(open);
+              }}
+            >
+              <PopoverTrigger asChild>
+                <div className="p-2 flex flex-col gap-1 mt-1 cursor-pointer hover:bg-gray-50 rounded-sm">
+                  <dl className="text-xs flex gap-1 items-center">
+                    <dt>role:</dt>
+                    <dd className="font-semibold bg-blue-300/50 px-1 rounded-sm">
+                      {message.author?.role === "tool" && message.author?.name
+                        ? `${message.author.role} (${message.author.name})`
+                        : message.author?.role}
+                    </dd>
+                  </dl>
+                  {message.channel && (
+                    <dl className="text-xs flex gap-1 items-center">
+                      <dt>channel:</dt>
+                      <dd className="font-semibold bg-blue-300/50 px-1 rounded-sm">
+                        {message.channel}
+                      </dd>
+                    </dl>
+                  )}
+                  {message.recipient && (
+                    <dl className="text-xs flex gap-1 items-center">
+                      <dt>recipient:</dt>
+                      <dd className="font-semibold bg-blue-300/50 px-1 rounded-sm">
+                        {message.recipient}
+                      </dd>
+                    </dl>
+                  )}
+                  {message.content_type && (
+                    <dl className="text-xs flex gap-1 items-center">
+                      <dt>content_type:</dt>
+                      <dd className="font-semibold bg-blue-300/50 px-1 rounded-sm">
+                        {message.content_type}
+                      </dd>
+                    </dl>
+                  )}
+                </div>
+              </PopoverTrigger>
+              <PopoverContent className="w-80">
+                <div className="flex items-center gap-1 mb-3">
+                  {(
+                    [
+                      "user",
+                      "assistant",
+                      "developer",
+                      "system",
+                      "tool",
+                    ] as const
+                  ).map((r) => (
+                    <button
+                      key={r}
+                      className={cn(
+                        "text-xs px-2 py-1 rounded-sm border",
+                        draft.author?.role === r
+                          ? "bg-gray-200 border-gray-300"
+                          : "border-transparent hover:bg-gray-50"
+                      )}
+                      onClick={() =>
+                        setDraft((prev) => ({
+                          ...prev,
+                          author: { role: r, name: prev.author?.name } as any,
+                        }))
+                      }
+                    >
+                      {r}
+                    </button>
+                  ))}
+                </div>
+
+                {draft.author?.role === "assistant" && (
+                  <div className="flex flex-col gap-3">
+                    <div className="flex flex-col gap-1">
+                      <label className="text-xs text-gray-500">Channel</label>
+                      <Select
+                        value={draft.channel}
+                        onValueChange={(val) =>
+                          setDraft((p) => ({ ...p, channel: val }))
+                        }
+                      >
+                        <SelectTrigger className="w-full">
+                          <SelectValue placeholder="Select channel" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="analysis">analysis</SelectItem>
+                          <SelectItem value="commentary">commentary</SelectItem>
+                          <SelectItem value="final">final</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="flex flex-col gap-1">
+                      <label className="text-xs text-gray-500">Recipient</label>
+                      <input
+                        className="border rounded-md px-2 py-1 text-sm outline-none focus:ring-2 focus:ring-blue-300"
+                        value={draft.recipient ?? ""}
+                        placeholder="e.g. functions.lookup_weather"
+                        onChange={(e) => {
+                          const value = e.currentTarget.value;
+                          setDraft((p) => ({ ...p, recipient: value }));
+                        }}
+                      />
+                    </div>
+                    <div className="flex flex-col gap-1">
+                      <label className="text-xs text-gray-500">
+                        Content type
+                      </label>
+                      <input
+                        className="border rounded-md px-2 py-1 text-sm outline-none focus:ring-2 focus:ring-blue-300"
+                        value={draft.content_type ?? ""}
+                        placeholder="e.g. json"
+                        onChange={(e) => {
+                          const value = e.currentTarget.value;
+                          setDraft((p) => ({ ...p, content_type: value }));
+                        }}
+                      />
+                    </div>
+                  </div>
+                )}
+
+                {draft.author?.role === "tool" && (
+                  <div className="flex flex-col gap-3">
+                    <div className="flex flex-col gap-1">
+                      <label className="text-xs text-gray-500">Tool name</label>
+                      <input
+                        className="border rounded-md px-2 py-1 text-sm outline-none focus:ring-2 focus:ring-blue-300"
+                        value={draft.author?.name ?? ""}
+                        placeholder="e.g. functions.get_weather"
+                        onChange={(e) => {
+                          const value = e.currentTarget.value;
+                          setDraft((p) => ({
+                            ...p,
+                            author: { role: p.author.role, name: value } as any,
+                          }));
+                        }}
+                      />
+                    </div>
+                    <div className="flex flex-col gap-1">
+                      <label className="text-xs text-gray-500">Channel</label>
+                      <Select
+                        value={draft.channel}
+                        onValueChange={(val) =>
+                          setDraft((p) => ({ ...p, channel: val }))
+                        }
+                      >
+                        <SelectTrigger className="w-full">
+                          <SelectValue placeholder="Select channel" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="analysis">analysis</SelectItem>
+                          <SelectItem value="commentary">commentary</SelectItem>
+                          <SelectItem value="final">final</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="flex flex-col gap-1">
+                      <label className="text-xs text-gray-500">Recipient</label>
+                      <input
+                        className="border rounded-md px-2 py-1 text-sm outline-none focus:ring-2 focus:ring-blue-300"
+                        value={draft.recipient ?? ""}
+                        placeholder="assistant"
+                        onChange={(e) => {
+                          const value = e.currentTarget.value;
+                          setDraft((p) => ({ ...p, recipient: value }));
+                        }}
+                      />
+                    </div>
+                  </div>
+                )}
+              </PopoverContent>
+            </Popover>
           </CollapsibleContent>
         </Collapsible>
       </div>
       <div className="text-sm flex flex-col gap-4 mt-3 mb-1">
         {message.content.map((content: any, idx: number) => (
-          <pre
-            className="bg-gray-100/50 p-4 rounded-md text-xs overflow-x-scroll"
-            key={idx}
-          >
-            {content.text}
-          </pre>
+          <textarea
+            key={`${idx}-${content?.text ?? ""}`}
+            className="bg-gray-100/50 p-3 rounded-md text-sm w-full resize-y focus:outline-none focus:ring-2 focus:ring-blue-300"
+            rows={1}
+            defaultValue={content.text}
+            ref={(el) => {
+              if (el) adjustTextareaSize(el);
+            }}
+            onInput={(e) => adjustTextareaSize(e.currentTarget)}
+            onBlur={(e) => onUpdateContent?.(idx, e.currentTarget.value)}
+          />
         ))}
       </div>
     </div>
@@ -322,42 +524,167 @@ function useTokens(text: string | undefined) {
     tokenTexts: string[];
     messages: Message[];
   }>({ tokens: [], tokenTexts: [], messages: [] });
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!text || !encoding) return;
-    const tokens = Array.from(encoding.encode(text, encoding.specialTokens()));
-    // @ts-ignore
-    const tokenTexts = tokens.map((t) => encoding.decodeUtf8([t]));
-    const parser = new JsStreamableParser(encoding, "user");
-    for (const token of tokens) {
-      parser.process(token);
-    }
-    const messages = JSON.parse(parser.messages).map((m: any) => ({
-      ...m,
-      content:
-        typeof m.content === "string"
-          ? [{ type: "text", text: m.content }]
-          : m.content,
-    }));
-    console.log("messages", typeof messages, messages);
+    try {
+      const tokens = Array.from(
+        encoding.encode(text, encoding.specialTokens())
+      );
+      // @ts-ignore
+      const tokenTexts = tokens.map((t) => encoding.decodeUtf8([t]));
+      const parser = new JsStreamableParser(encoding);
+      for (let i = 0; i < tokens.length; i++) {
+        try {
+          parser.process(tokens[i]);
+        } catch (e: any) {
+          const msg = e?.message || String(e);
+          setError(`Parser error at token index ${i}: ${msg}`);
+          return;
+        }
+      }
+      let messages: Message[] = [];
+      try {
+        messages = JSON.parse(parser.messages).map((m: any) => ({
+          author: { role: m.role, name: m.name },
+          channel: m.channel,
+          recipient: m.recipient,
+          content_type: m.content_type,
+          content:
+            typeof m.content === "string"
+              ? [{ type: "text", text: m.content }]
+              : m.content,
+        }));
+      } catch (e: any) {
+        const msg = e?.message || String(e);
+        setError(`Failed to parse messages JSON: ${msg}`);
+        return;
+      }
 
-    setTokenData({
-      tokens: Array.from(tokens),
-      tokenTexts: Array.from(tokenTexts),
-      messages: messages,
-    });
+      setTokenData({
+        tokens: Array.from(tokens),
+        tokenTexts: Array.from(tokenTexts),
+        messages,
+      });
+      setError(null);
+    } catch (e: any) {
+      const msg = e?.message || String(e);
+      setError(`Encoding error: ${msg}`);
+    }
   }, [text, encoding]);
+
+  const convertTokensToAll = (tokens: number[]) => {
+    if (!encoding) return;
+    try {
+      // @ts-ignore
+      const tokenTexts = tokens.map((t) => encoding.decodeUtf8([t]));
+      const parser = new JsStreamableParser(encoding);
+      for (let i = 0; i < tokens.length; i++) {
+        try {
+          parser.process(tokens[i]);
+        } catch (e: any) {
+          const msg = e?.message || String(e);
+          setError(`Parser error at token index ${i}: ${msg}`);
+          return;
+        }
+      }
+      let messages: Message[] = [];
+      try {
+        messages = JSON.parse(parser.messages).map((m: any) => ({
+          author: { role: m.role, name: m.name },
+          channel: m.channel,
+          recipient: m.recipient,
+          content_type: m.content_type,
+          content:
+            typeof m.content === "string"
+              ? [{ type: "text", text: m.content }]
+              : m.content,
+        }));
+      } catch (e: any) {
+        const msg = e?.message || String(e);
+        setError(`Failed to parse messages JSON: ${msg}`);
+        return;
+      }
+      setTokenData({ tokens: Array.from(tokens), tokenTexts, messages });
+      setError(null);
+    } catch (e: any) {
+      const msg = e?.message || String(e);
+      setError(`Decoding error: ${msg}`);
+    }
+  };
+
+  const convertTextToAll = (newText: string) => {
+    if (!encoding) return;
+    try {
+      const tokens = Array.from(
+        encoding.encode(newText, encoding.specialTokens())
+      );
+      convertTokensToAll(tokens);
+    } catch (e: any) {
+      const msg = e?.message || String(e);
+      setError(`Encoding error: ${msg}`);
+    }
+  };
 
   return {
     ...tokenData,
     highlightedIndex,
     setHighlightedIndex,
+    error,
+    setError,
+    setTokens: (newTokens: number[]) => convertTokensToAll(newTokens),
+    setTokenTexts: (newTokenTexts: string | string[]) =>
+      convertTextToAll(
+        Array.isArray(newTokenTexts) ? newTokenTexts.join("") : newTokenTexts
+      ),
+    setMessages: (newMessages: Message[]) => {
+      // Flatten author for WASM (serde(flatten) expects top-level role/name)
+      const wasmMessages = newMessages.map((m) => ({
+        role: m.author.role,
+        name: m.author.name,
+        channel: m.channel,
+        recipient: m.recipient,
+        content_type: m.content_type,
+        content: (m.content || []).map((c: any) =>
+          typeof c === "string" ? { type: "text", text: c } : c
+        ),
+      }));
+      try {
+        const tokenIds = encoding?.renderConversation(
+          {
+            messages: wasmMessages as any,
+          },
+          {
+            auto_drop_analysis: false,
+          }
+        );
+        if (!tokenIds) return;
+        const tokenIdsArray = Array.from(tokenIds);
+        // @ts-ignore
+        const tokenTexts = tokenIdsArray.map((t) => encoding?.decodeUtf8([t]));
+
+        setTokenData({
+          tokens: tokenIdsArray,
+          tokenTexts: tokenTexts.filter((t) => t !== undefined),
+          messages: newMessages,
+        });
+        setError(null);
+      } catch (e: any) {
+        const msg = e?.message || String(e);
+        setError(`Render error: ${msg}`);
+      }
+    },
   };
 }
 
 function App() {
   const [text, setText] = useState(
-    `<|start|>user<|message|>What is the weather in SF?<|end|><|start|>assistant<|channel|>analysis<|message|>User asks: “What is the weather in SF?” We need to use lookup_weather tool.<|end|><|start|>assistant to=functions.lookup_weather<|channel|>commentary <|constrain|>json<|message|>{"location": "San Francisco"}<|end|><|start|>assistant`
+    `<|start|>user<|message|>What is the weather in SF?<|end|>` +
+      `<|start|>assistant<|channel|>analysis<|message|>User asks: “What is the weather in SF?” We need to use lookup_weather tool.<|end|>` +
+      `<|start|>assistant<|channel|>commentary to=functions.lookup_weather<|constrain|>json<|message|>{"location": "San Francisco"}<|end|>` +
+      `<|start|>assistant`
+    // ""
   );
   const {
     tokens,
@@ -365,6 +692,10 @@ function App() {
     highlightedIndex,
     setHighlightedIndex,
     messages,
+    error,
+    setTokens,
+    setMessages,
+    setError,
   } = useTokens(text);
 
   const [wrapWhitespace, setWrapWhitespace] = useState(true);
@@ -375,6 +706,12 @@ function App() {
       <h1 className="text-3xl font-bold mb-4 tracking-tight">
         OpenAI harmony response format
       </h1>
+      {error && (
+        <div className="mb-4 rounded-md border border-red-300 bg-red-50 text-red-800 px-3 py-2 text-sm">
+          <strong className="font-semibold">Harmony parser error: </strong>
+          <span>{error}</span>
+        </div>
+      )}
       <p className="text-sm text-gray-500 mb-4">
         The{" "}
         <a
@@ -416,14 +753,61 @@ function App() {
           <h3 className="text-sm font-semibold text-gray-700 mb-2">Messages</h3>
           <div className="flex flex-col gap-4">
             {messages.map((message: Message, idx: number) => (
-              <MessageItem key={idx} message={message} />
+              <MessageItem
+                key={idx}
+                message={message}
+                onUpdateContent={(contentIndex, newText) => {
+                  const updatedMessages = messages.map(
+                    (existingMessage: Message, messageIndex: number) => {
+                      if (messageIndex !== idx) return existingMessage;
+                      const newContent = (existingMessage.content || []).map(
+                        (c: any, ci: number) =>
+                          ci === contentIndex ? { ...c, text: newText } : c
+                      );
+                      return { ...existingMessage, content: newContent };
+                    }
+                  );
+                  setMessages(updatedMessages);
+                }}
+                onUpdateHeader={(updates) => {
+                  const updatedMessages = messages.map(
+                    (existingMessage: Message, messageIndex: number) => {
+                      if (messageIndex !== idx) return existingMessage;
+                      const next: Message = {
+                        ...existingMessage,
+                        ...updates,
+                        author: {
+                          ...(existingMessage.author || { role: "user" }),
+                          ...(updates as any).author,
+                        },
+                      } as Message;
+                      const normalize = (val?: string) =>
+                        val && val.length > 0 ? val : undefined;
+                      next.channel = normalize(next.channel);
+                      next.recipient = normalize(next.recipient);
+                      next.content_type = normalize(next.content_type);
+                      return next;
+                    }
+                  );
+                  setMessages(updatedMessages);
+                }}
+              />
             ))}
-            {/* <Button
+            <Button
               variant="outline"
               className="border border-dashed border-gray-300 rounded-md text-center py-8 text-sm text-gray-500 cursor-pointer"
+              onClick={() =>
+                setMessages([
+                  ...messages,
+                  {
+                    author: { role: "user" },
+                    content: [{ type: "text", text: "" }],
+                  } as Message,
+                ])
+              }
             >
               <PlusIcon /> Add new message
-            </Button> */}
+            </Button>
           </div>
         </div>
         <div className="flex flex-col gap-4">
@@ -454,9 +838,21 @@ function App() {
               onHover={setHighlightedIndex}
               wrapWhitespace={wrapWhitespace}
               highlightTokens={highlightTokens}
+              editable={true}
+              onEdit={(text) => {
+                if (typeof text !== "string") return;
+                try {
+                  const parsed = JSON.parse(text);
+                  setTokens(parsed);
+                  setError(null);
+                } catch (e: any) {
+                  const msg = e?.message || String(e);
+                  setError(`Invalid token JSON: ${msg}`);
+                }
+              }}
             />
           </div>
-          {/* <div className="flex flex-col md:flex-row gap-2">
+          <div className="flex flex-col md:flex-row gap-2">
             <div className="flex items-center space-x-2">
               <Switch
                 id="wrap-whitespace"
@@ -473,7 +869,7 @@ function App() {
               />
               <Label htmlFor="highlight-tokens">Highlight Tokens</Label>
             </div>
-          </div> */}
+          </div>
         </div>
       </div>
     </div>

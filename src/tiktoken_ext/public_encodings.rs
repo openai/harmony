@@ -411,6 +411,28 @@ where
     .map_err(LoadError::CoreBPECreationFailed)
 }
 
+#[cfg(target_arch = "wasm32")]
+pub fn load_encoding_from_bytes<S, TS>(
+    bytes: &[u8],
+    expected_hash: Option<&str>,
+    special_tokens: S,
+    pattern: &str,
+) -> Result<CoreBPE, LoadError>
+where
+    S: IntoIterator<Item = (TS, Rank)>,
+    TS: Into<String>,
+{
+    let reader = std::io::BufReader::new(bytes);
+    let encoder =
+        load_tiktoken_vocab(reader, expected_hash).map_err(LoadError::InvalidTiktokenVocabFile)?;
+    CoreBPE::new(
+        encoder,
+        special_tokens.into_iter().map(|(k, v)| (k.into(), v)),
+        pattern,
+    )
+    .map_err(LoadError::CoreBPECreationFailed)
+}
+
 /// This returns the path to a file containing the data at `url`. If the file is
 /// cached, it is used. Otherwise, the file is downloaded and cached.
 #[cfg(not(target_arch = "wasm32"))]

@@ -9,6 +9,7 @@ use std::{
 use base64::{prelude::BASE64_STANDARD, Engine as _};
 
 use crate::tiktoken::{CoreBPE, Rank};
+use fs2::FileExt;
 use sha1::Sha1;
 use sha2::{Digest as _, Sha256};
 
@@ -420,24 +421,35 @@ fn download_or_find_cached_file(
 ) -> Result<PathBuf, RemoteVocabFileError> {
     let cache_dir = resolve_cache_dir()?;
     let cache_path = resolve_cache_path(&cache_dir, url);
-    if cache_path.exists() {
-        if verify_file_hash(&cache_path, expected_hash)? {
-            return Ok(cache_path);
-        }
-        let _ = std::fs::remove_file(&cache_path);
-    }
-    let hash = load_remote_file(url, &cache_path)?;
-    if let Some(expected_hash) = expected_hash {
-        if hash != expected_hash {
+    let lock_path = cache_path.with_extension("lock");
+    let lock_file = File::create(&lock_path).map_err(|e| {
+        RemoteVocabFileError::IOError(format!("creating lock file {lock_path:?}"), e)
+    })?;
+    lock_file
+        .lock_exclusive()
+        .map_err(|e| RemoteVocabFileError::IOError(format!("locking file {lock_path:?}"), e))?;
+    let result = (|| {
+        if cache_path.exists() {
+            if verify_file_hash(&cache_path, expected_hash)? {
+                return Ok(cache_path);
+            }
             let _ = std::fs::remove_file(&cache_path);
-            return Err(RemoteVocabFileError::HashMismatch {
-                file_url: url.to_string(),
-                expected_hash: expected_hash.to_string(),
-                computed_hash: hash,
-            });
         }
-    }
-    Ok(cache_path)
+        let hash = load_remote_file(url, &cache_path)?;
+        if let Some(expected_hash) = expected_hash {
+            if hash != expected_hash {
+                let _ = std::fs::remove_file(&cache_path);
+                return Err(RemoteVocabFileError::HashMismatch {
+                    file_url: url.to_string(),
+                    expected_hash: expected_hash.to_string(),
+                    computed_hash: hash,
+                });
+            }
+        }
+        Ok(cache_path)
+    })();
+    let _ = fs2::FileExt::unlock(&lock_file);
+    result
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -570,6 +582,27 @@ mod tests {
     fn test_load_encodings() {
         for encoding in Encoding::all() {
             let _ = encoding.load().unwrap();
+        }
+    }
+
+    #[test]
+    fn test_parallel_load_encodings() {
+        use std::thread;
+
+        let encodings = Encoding::all();
+        for encoding in encodings {
+            let name = encoding.name();
+            let handles: Vec<_> = (0..8)
+                .map(|_| {
+                    let name = name.to_string();
+                    thread::spawn(move || {
+                        Encoding::from_name(&name).unwrap().load().unwrap();
+                    })
+                })
+                .collect();
+            for handle in handles {
+                handle.join().expect("Thread panicked");
+            }
         }
     }
 }

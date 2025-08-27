@@ -54,7 +54,6 @@ wasm-bindgen-futures = { version = "0.4.42", optional = true }
 url = "2.5"
 
 [target.'cfg(target_os = "wasi")'.dependencies]
-wasi = "0.14"
 waki = "0.3"
 
 [dev-dependencies]

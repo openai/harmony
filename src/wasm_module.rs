@@ -333,6 +333,7 @@ pub enum StreamState {
     Content,
 }
 
+#[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
 #[wasm_bindgen]
 pub async fn load_harmony_encoding(
     name: &str,
@@ -344,8 +345,26 @@ pub async fn load_harmony_encoding(
     let parsed: HarmonyEncodingName = name
         .parse::<HarmonyEncodingName>()
         .map_err(|e| JsValue::from_str(&e.to_string()))?;
-    let encoding =
-        inner_load_harmony_encoding(parsed).map_err(|e| JsValue::from_str(&e.to_string()))?;
+    let encoding = inner_load_harmony_encoding(parsed)
+        .await
+        .map_err(|e| JsValue::from_str(&e.to_string()))?;
+    Ok(JsHarmonyEncoding { inner: encoding })
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "wasi"))]
+#[wasm_bindgen]
+pub fn load_harmony_encoding(
+    name: &str,
+    base_url: Option<String>,
+) -> Result<JsHarmonyEncoding, JsValue> {
+    if let Some(base) = base_url {
+        crate::tiktoken_ext::set_tiktoken_base_url(base);
+    }
+    let parsed: HarmonyEncodingName = name
+        .parse::<HarmonyEncodingName>()
+        .map_err(|e| JsValue::from_str(&e.to_string()))?;
+    let encoding = inner_load_harmony_encoding(parsed)
+        .map_err(|e| JsValue::from_str(&e.to_string()))?;
     Ok(JsHarmonyEncoding { inner: encoding })
 }
 

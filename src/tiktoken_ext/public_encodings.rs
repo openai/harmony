@@ -104,13 +104,21 @@ impl Encoding {
             .load()
     }
 
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
     pub async fn load_from_name(name: impl AsRef<str>) -> Result<CoreBPE, LoadError> {
         let name = name.as_ref();
         Self::from_name(name)
             .ok_or_else(|| LoadError::UnknownEncodingName(name.to_string()))?
             .load()
             .await
+    }
+
+    #[cfg(all(target_arch = "wasm32", target_os = "wasi"))]
+    pub fn load_from_name(name: impl AsRef<str>) -> Result<CoreBPE, LoadError> {
+        let name = name.as_ref();
+        Self::from_name(name)
+            .ok_or_else(|| LoadError::UnknownEncodingName(name.to_string()))?
+            .load()
     }
 
     pub fn name(&self) -> &'static str {
@@ -202,11 +210,45 @@ impl Encoding {
         }
     }
 
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
     pub async fn load(&self) -> Result<CoreBPE, LoadError> {
         let url = self.public_vocab_file_url();
         let vocab_bytes = download_or_find_cached_file_bytes(&url, Some(self.expected_hash()))
             .await
+            .map_err(LoadError::DownloadOrLoadVocabFile)?;
+
+        match self {
+            Self::O200kHarmony => {
+                let mut specials: Vec<(String, Rank)> = self
+                    .special_tokens()
+                    .iter()
+                    .map(|(s, r)| ((*s).to_string(), *r))
+                    .collect();
+                specials.extend((200014..=201088).map(|id| (format!("<|reserved_{id}|>"), id)));
+                load_encoding_from_bytes(&vocab_bytes, None, specials, &self.pattern())
+            }
+            Self::O200kBase => {
+                let mut specials: Vec<(String, Rank)> = self
+                    .special_tokens()
+                    .iter()
+                    .map(|(s, r)| ((*s).to_string(), *r))
+                    .collect();
+                specials.extend((199998..=201088).map(|id| (format!("<|reserved_{id}|>"), id)));
+                load_encoding_from_bytes(&vocab_bytes, None, specials, &self.pattern())
+            }
+            _ => load_encoding_from_bytes(
+                &vocab_bytes,
+                None,
+                self.special_tokens().iter().cloned(),
+                &self.pattern(),
+            ),
+        }
+    }
+
+    #[cfg(all(target_arch = "wasm32", target_os = "wasi"))]
+    pub fn load(&self) -> Result<CoreBPE, LoadError> {
+        let url = self.public_vocab_file_url();
+        let vocab_bytes = download_or_find_cached_file_bytes(&url, Some(self.expected_hash()))
             .map_err(LoadError::DownloadOrLoadVocabFile)?;
 
         match self {
@@ -390,6 +432,29 @@ where
     load_tiktoken_vocab(reader, expected_hash)
 }
 
+#[cfg(any(target_arch = "wasm32"))]
+pub fn load_encoding_from_bytes<S, TS>(
+    bytes: &[u8],
+    expected_hash: Option<&str>,
+    special_tokens: S,
+    pattern: &str,
+) -> Result<CoreBPE, LoadError>
+where
+    S: IntoIterator<Item = (TS, Rank)>,
+    TS: Into<String>,
+{
+    let cursor = std::io::Cursor::new(bytes);
+    let reader = std::io::BufReader::new(cursor);
+    let encoder = load_tiktoken_vocab(reader, expected_hash)
+        .map_err(LoadError::InvalidTiktokenVocabFile)?;
+    CoreBPE::new(
+        encoder,
+        special_tokens.into_iter().map(|(k, v)| (k.into(), v)),
+        pattern,
+    )
+    .map_err(LoadError::CoreBPECreationFailed)
+}
+
 pub fn load_encoding_from_file<P, S, TS>(
     file_path: P,
     expected_hash: Option<&str>,
@@ -440,12 +505,31 @@ fn download_or_find_cached_file(
     Ok(cache_path)
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
 async fn download_or_find_cached_file_bytes(
     url: &str,
     expected_hash: Option<&str>,
 ) -> Result<Vec<u8>, RemoteVocabFileError> {
     let bytes = load_remote_file_bytes(url).await?;
+    if let Some(expected_hash) = expected_hash {
+        let computed_hash = format!("{:x}", Sha256::digest(&bytes));
+        if computed_hash != expected_hash {
+            return Err(RemoteVocabFileError::HashMismatch {
+                file_url: url.to_string(),
+                expected_hash: expected_hash.to_string(),
+                computed_hash,
+            });
+        }
+    }
+    Ok(bytes)
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "wasi"))]
+fn download_or_find_cached_file_bytes(
+    url: &str,
+    expected_hash: Option<&str>,
+) -> Result<Vec<u8>, RemoteVocabFileError> {
+    let bytes = load_remote_file_bytes(url)?;
     if let Some(expected_hash) = expected_hash {
         let computed_hash = format!("{:x}", Sha256::digest(&bytes));
         if computed_hash != expected_hash {
@@ -534,17 +618,27 @@ fn load_remote_file(url: &str, destination: &Path) -> Result<String, RemoteVocab
     Ok(format!("{:x}", hasher.finalize()))
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
 fn load_remote_file(_url: &str, _destination: &Path) -> Result<String, RemoteVocabFileError> {
     Err(RemoteVocabFileError::FailedToDownloadOrLoadVocabFile(
         Box::new(std::io::Error::new(
             std::io::ErrorKind::Other,
-            "Downloading files is not supported in wasm32",
+            "Downloading files is not supported in wasm32, use async version",
         )),
     ))
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", target_os = "wasi"))]
+fn load_remote_file(_url: &str, _destination: &Path) -> Result<String, RemoteVocabFileError> {
+    Err(RemoteVocabFileError::FailedToDownloadOrLoadVocabFile(
+        Box::new(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "Synchronous file downloading is not supported in WASI, use async version",
+        )),
+    ))
+}
+
+#[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
 async fn load_remote_file_bytes(url: &str) -> Result<Vec<u8>, RemoteVocabFileError> {
     use reqwest::Client;
 
@@ -560,6 +654,49 @@ async fn load_remote_file_bytes(url: &str) -> Result<Vec<u8>, RemoteVocabFileErr
         .await
         .map_err(|e| RemoteVocabFileError::FailedToDownloadOrLoadVocabFile(Box::new(e)))?;
     Ok(bytes.to_vec())
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "wasi"))]
+fn load_remote_file_bytes(url: &str) -> Result<Vec<u8>, RemoteVocabFileError> {
+    use waki::Client;
+
+    println!("Downloading vocab file from {url}");
+
+    // Create a waki client and make the request
+    let client = Client::new();
+    let response = client
+        .get(url)
+        .send()
+        .map_err(|e| RemoteVocabFileError::FailedToDownloadOrLoadVocabFile(
+            Box::new(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("Request failed: {}", e)
+            ))
+        ))?;
+
+    // Check if the response was successful
+    let status_code = response.status_code();
+    if !(200..300).contains(&status_code) {
+        return Err(RemoteVocabFileError::FailedToDownloadOrLoadVocabFile(
+            Box::new(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("HTTP request failed with status: {}", status_code)
+            ))
+        ));
+    }
+
+    // Get the response body as bytes
+    let bytes = response
+        .body()
+        .map_err(|e| RemoteVocabFileError::FailedToDownloadOrLoadVocabFile(
+            Box::new(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("Failed to read response body: {}", e)
+            ))
+        ))?;
+
+    println!("Downloaded {} bytes", bytes.len());
+    Ok(bytes)
 }
 
 #[cfg(test)]

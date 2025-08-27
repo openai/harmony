@@ -660,8 +660,6 @@ async fn load_remote_file_bytes(url: &str) -> Result<Vec<u8>, RemoteVocabFileErr
 fn load_remote_file_bytes(url: &str) -> Result<Vec<u8>, RemoteVocabFileError> {
     use waki::Client;
 
-    println!("Downloading vocab file from {url}");
-
     // Create a waki client and make the request
     let client = Client::new();
     let response = client
@@ -695,7 +693,6 @@ fn load_remote_file_bytes(url: &str) -> Result<Vec<u8>, RemoteVocabFileError> {
             ))
         ))?;
 
-    println!("Downloaded {} bytes", bytes.len());
     Ok(bytes)
 }
 

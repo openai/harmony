@@ -1,0 +1,208 @@
+@startuml
+!theme plain
+title Harmony Render Flow - From Prompt to Encoded Tokens
+
+actor User
+
+box "Python/JS Bindings" #LightBlue
+    participant "HarmonyEncoding\n(Python/JS Wrapper)" as API
+end box
+
+box "encoding.rs" #LightGreen
+    participant "HarmonyEncoding" as Encoding
+    participant "StreamableParser" as Parser
+    participant "FormattingToken" as Formatter
+end box
+
+box "chat.rs" #LightYellow
+    participant "Conversation" as Conv
+    participant "Message" as Msg
+    participant "Content\n(TextContent/SystemContent/DeveloperContent)" as Content
+    participant "Role" as Role
+    participant "Author" as Author
+end box
+
+box "tiktoken.rs" #LightCoral
+    participant "CoreBPE\n(Tokenizer)" as Tokenizer
+end box
+
+== Message Creation ==
+User -> API: Create conversation with messages
+activate API
+
+API -> Conv: Conversation.from_messages()
+activate Conv
+
+API -> Msg: Message.from_role_and_content(Role.USER, "Hello!")
+activate Msg
+Msg -> Content: TextContent("Hello!")
+activate Content
+Content --> Msg: content
+deactivate Content
+Msg --> API: user_message
+deactivate Msg
+
+API -> Msg: Message.from_role_and_content(Role.SYSTEM, SystemContent.new())
+activate Msg
+Msg -> Content: SystemContent with model_identity, reasoning_effort, etc.
+activate Content
+Content --> Msg: system_content
+deactivate Content
+Msg --> API: system_message
+deactivate Msg
+
+Conv -> Conv: Add messages to conversation
+Conv --> API: conversation
+deactivate Conv
+
+== Encoding Process ==
+User -> API: render_conversation_for_completion(conversation, Role.ASSISTANT)
+API -> Encoding: render_conversation_for_completion()
+activate Encoding
+
+Encoding -> Encoding: Check for function tools in conversation
+Encoding -> Encoding: Determine render options
+
+loop For each message in conversation
+    Encoding -> Msg: Process message
+    activate Msg
+    
+    == Message Header Rendering ==
+    Encoding -> Formatter: render_formatting_token(FormattingToken::Start)
+    activate Formatter
+    Formatter -> Tokenizer: encode_with_special_tokens("<|start|>")
+    activate Tokenizer
+    Tokenizer --> Formatter: [start_token]
+    deactivate Tokenizer
+    Formatter --> Encoding: start_tokens
+    deactivate Formatter
+    
+    Encoding -> Tokenizer: encode_ordinary(role.as_str())
+    activate Tokenizer
+    Tokenizer --> Encoding: role_tokens
+    deactivate Tokenizer
+    
+    alt Message has recipient
+        Encoding -> Tokenizer: encode_ordinary("to={recipient}")
+        activate Tokenizer
+        Tokenizer --> Encoding: recipient_tokens
+        deactivate Tokenizer
+    end
+    
+    alt Message has channel
+        Encoding -> Formatter: render_formatting_token(FormattingToken::Channel)
+        activate Formatter
+        Formatter -> Tokenizer: encode_with_special_tokens("<|channel|>")
+        activate Tokenizer
+        Tokenizer --> Formatter: [channel_token]
+        deactivate Tokenizer
+        Formatter --> Encoding: channel_tokens
+        deactivate Formatter
+        
+        Encoding -> Tokenizer: encode_ordinary(channel_name)
+        activate Tokenizer
+        Tokenizer --> Encoding: channel_name_tokens
+        deactivate Tokenizer
+    end
+    
+    Encoding -> Formatter: render_formatting_token(FormattingToken::Message)
+    activate Formatter
+    Formatter -> Tokenizer: encode_with_special_tokens("<|message|>")
+    activate Tokenizer
+    Tokenizer --> Formatter: [message_token]
+    deactivate Tokenizer
+    Formatter --> Encoding: message_tokens
+    deactivate Formatter
+    
+    == Content Rendering ==
+    loop For each content in message
+        Encoding -> Content: Render content based on type
+        activate Content
+        
+        alt TextContent
+            Content -> Tokenizer: encode_ordinary(text)
+            activate Tokenizer
+            Tokenizer --> Content: text_tokens
+            deactivate Tokenizer
+            
+        else SystemContent
+            Content -> Content: Build system sections (identity, reasoning, tools, channels)
+            Content -> Tokenizer: encode_ordinary(formatted_system_content)
+            activate Tokenizer
+            Tokenizer --> Content: system_tokens
+            deactivate Tokenizer
+            
+        else DeveloperContent
+            Content -> Content: Build developer sections (instructions, tools)
+            Content -> Tokenizer: encode_ordinary(formatted_developer_content)
+            activate Tokenizer
+            Tokenizer --> Content: developer_tokens
+            deactivate Tokenizer
+        end
+        
+        Content --> Encoding: content_tokens
+        deactivate Content
+    end
+    
+    == Message Footer ==
+    alt Assistant message with recipient (tool call)
+        Encoding -> Formatter: render_formatting_token(FormattingToken::EndMessageAssistantToTool)
+        activate Formatter
+        Formatter -> Tokenizer: encode_with_special_tokens("<|call|>")
+        activate Tokenizer
+        Tokenizer --> Formatter: [call_token]
+        deactivate Tokenizer
+        Formatter --> Encoding: end_tokens
+        deactivate Formatter
+    else Regular message
+        Encoding -> Formatter: render_formatting_token(FormattingToken::EndMessage)
+        activate Formatter
+        Formatter -> Tokenizer: encode_with_special_tokens("<|end|>")
+        activate Tokenizer
+        Tokenizer --> Formatter: [end_token]
+        deactivate Tokenizer
+        Formatter --> Encoding: end_tokens
+        deactivate Formatter
+    end
+    
+    Msg --> Encoding: Complete message tokens
+    deactivate Msg
+end
+
+== Final Step - Add Next Turn Role ==
+Encoding -> Formatter: render_formatting_token(FormattingToken::Start)
+activate Formatter
+Formatter -> Tokenizer: encode_with_special_tokens("<|start|>")
+activate Tokenizer
+Tokenizer --> Formatter: [start_token]
+deactivate Tokenizer
+Formatter --> Encoding: start_tokens
+deactivate Formatter
+
+Encoding -> Tokenizer: encode_ordinary(next_turn_role.as_str())
+activate Tokenizer
+Tokenizer --> Encoding: role_tokens
+deactivate Tokenizer
+
+Encoding --> API: Complete token sequence
+deactivate Encoding
+
+API --> User: Encoded tokens ready for model inference
+
+note over User, Formatter
+**Example Output Tokens:**
+[start_token] "system" [message_token] "You are ChatGPT..." [end_token]
+[start_token] "user" [message_token] "Hello!" [end_token]  
+[start_token] "assistant"
+end note
+
+note over Encoding
+**Key Features:**
+- Special formatting tokens (<|start|>, <|message|>, <|end|>, etc.)
+- Role-based message structure
+- Channel support for reasoning (analysis, commentary, final)
+- Tool calling with recipients
+- System/Developer content with structured formatting
+end note
+
+@enduml

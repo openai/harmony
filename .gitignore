@@ -22,7 +22,6 @@ lib64/
 parts/
 sdist/
 var/
-include/
 man/
 venv/
 *.egg-info/

@@ -1,0 +1,192 @@
+@startuml
+!define COMPONENT_DIAGRAM
+
+title OpenAI Harmony - Project Architecture
+
+package "Core Rust Implementation" as rust_core {
+    [lib.rs] as lib
+    note right of lib
+        - Main library entry point
+        - Module exports
+        - Feature flags
+    end note
+    
+    [chat.rs] as chat
+    note right of chat
+        - Role enum (User, Assistant, System, Developer, Tool)
+        - Author struct
+        - Message struct
+        - Content types (Text, System, Developer)
+        - Conversation struct
+        - Tool configurations
+    end note
+    
+    [encoding.rs] as encoding
+    note right of encoding
+        - HarmonyEncoding struct
+        - StreamableParser
+        - Rendering & parsing logic
+        - Token formatting
+        - Conversation rendering
+    end note
+    
+    [registry.rs] as registry
+    note right of registry
+        - Built-in encodings
+        - HarmonyEncodingName enum
+        - load_harmony_encoding()
+    end note
+    
+    [tiktoken.rs] as tiktoken
+    note right of tiktoken
+        - Tokenization logic
+        - CoreBPE integration
+    end note
+    
+    [tiktoken_ext/] as tiktoken_ext
+    note right of tiktoken_ext
+        - Extended tokenization
+        - Public encodings
+    end note
+}
+
+package "Python Bindings" as python_bindings {
+    [py_module.rs] as py_module
+    note right of py_module
+        - PyO3 bindings
+        - Python FFI interface
+        - Compiled to .so extension
+    end note
+    
+    [python/openai_harmony/] as python_wrapper
+    note right of python_wrapper
+        - Pure Python wrapper
+        - Pydantic models
+        - Type annotations
+        - Pythonic API
+    end note
+}
+
+package "JavaScript/WASM Bindings" as js_bindings {
+    [wasm_module.rs] as wasm_module
+    note right of wasm_module
+        - WASM bindings
+        - JavaScript FFI
+        - Web compatibility
+    end note
+    
+    [javascript/] as js_package
+    note right of js_package
+        - NPM package
+        - TypeScript definitions
+        - Web distribution
+    end note
+}
+
+package "Demo Application" as demo {
+    [Next.js App] as nextjs
+    note right of nextjs
+        - React components
+        - Interactive demo
+        - WASM integration
+        - UI components
+    end note
+    
+    [HarmonyDemo.tsx] as demo_component
+    note right of demo_component
+        - Main demo component
+        - Conversation rendering
+        - Token visualization
+    end note
+}
+
+package "External Dependencies" as external {
+    [tiktoken lib] as tiktoken_lib
+    [serde] as serde
+    [PyO3] as pyo3
+    [wasm-bindgen] as wasm_bindgen
+}
+
+package "Configuration & Build" as config {
+    [Cargo.toml] as cargo_toml
+    [pyproject.toml] as pyproject
+    [package.json] as package_json
+}
+
+package "Test Data & Documentation" as tests_docs {
+    [test-data/] as test_data
+    [tests/] as tests
+    [docs/] as docs
+}
+
+' Core relationships
+lib --> chat
+lib --> encoding
+lib --> registry
+lib --> tiktoken
+lib --> tiktoken_ext
+
+encoding --> chat
+encoding --> tiktoken
+registry --> encoding
+
+' Python bindings
+py_module --> lib
+python_wrapper --> py_module
+py_module ..> pyo3 : uses
+
+' JavaScript/WASM bindings
+wasm_module --> lib
+js_package --> wasm_module
+wasm_module ..> wasm_bindgen : uses
+
+' Demo application
+demo_component --> js_package
+nextjs --> demo_component
+
+' External dependencies
+tiktoken --> tiktoken_lib
+encoding ..> serde : uses
+chat ..> serde : uses
+
+' Configuration
+cargo_toml --> lib
+pyproject --> py_module
+package_json --> js_package
+
+' Testing and documentation
+tests --> python_wrapper
+tests --> lib
+test_data --> tests
+docs --> lib
+
+note top of rust_core
+  **Core Implementation**
+  - Fast Rust implementation
+  - Harmony format rendering/parsing
+  - Token-level operations
+  - Multi-language bindings
+end note
+
+note top of python_bindings
+  **Python Interface**
+  - Pythonic API wrapper
+  - Type safety with Pydantic
+  - pip installable package
+end note
+
+note top of js_bindings
+  **Web Interface**
+  - WASM compilation
+  - Browser compatibility
+  - NPM package
+end note
+
+note top of demo
+  **Interactive Demo**
+  - Live format demonstration
+  - Token visualization
+  - Web-based interface
+end note
+
+@enduml

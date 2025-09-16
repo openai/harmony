@@ -820,6 +820,12 @@ impl Render<Message> for HarmonyEncoding {
             }
         };
 
+        // next header channel
+        if let Some(channel) = &message.channel {
+            self.render_formatting_token_into(FormattingToken::Channel, into)?;
+            self.render_text_into(channel, into)?;
+        }
+
         // next render the header recipient, if there is one
         if let Some(recipient) = &message.recipient {
             if recipient != "all" {
@@ -827,24 +833,15 @@ impl Render<Message> for HarmonyEncoding {
             }
         }
 
-        // next header channel
-        if let Some(channel) = &message.channel {
-            self.render_formatting_token_into(FormattingToken::Channel, into)?;
-            self.render_text_into(channel, into)?;
-        }
-
         // finally content type
         if let Some(content_type) = &message.content_type {
-            // <|constrain|> is a unique case which needs to be tokenized as a special token
             if let Some(constrain_marker) =
                 self.mapped_format_token(FormattingToken::ConstrainedFormat)
             {
                 if let Some(rest) = content_type.strip_prefix(constrain_marker) {
-                    // Render the space, then the constrain marker as a special token, then the rest as text (if any)
-                    self.render_text_into(" ", into)?;
-                    self.render_formatting_token_into(FormattingToken::ConstrainedFormat, into)?;
+                    // Render the content type with mandatory leading space
                     if !rest.is_empty() {
-                        self.render_text_into(rest, into)?;
+                        self.render_text_into(format!(" {rest}"), into)?;
                     }
                 } else {
                     self.render_text_into(format!(" {content_type}"), into)?;

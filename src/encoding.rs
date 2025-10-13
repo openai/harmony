@@ -1032,6 +1032,7 @@ pub struct StreamableParser {
     stop_tokens: HashSet<Rank>,
     last_content_delta: Option<String>,
     undecoded_tokens: Vec<Rank>,
+    undecoded_bytes: Vec<u8>,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -1068,6 +1069,7 @@ impl StreamableParser {
             stop_tokens,
             last_content_delta: None,
             undecoded_tokens: Vec::new(),
+            undecoded_bytes: Vec::new(),
         })
     }
 
@@ -1148,14 +1150,60 @@ impl StreamableParser {
                         match self
                             .encoding
                             .tokenizer()
-                            .decode_utf8(&self.undecoded_tokens)
+                            .decode_bytes(&self.undecoded_tokens)
                         {
-                            Ok(decoded) => {
-                                content_tokens.extend(self.undecoded_tokens.iter().copied());
-                                self.last_content_delta = Some(decoded);
+                            Ok(decoded_bytes) => {
+                                self.undecoded_bytes.extend(decoded_bytes.iter().copied());
+                                match String::from_utf8(self.undecoded_bytes.clone()) {
+                                    Ok(decoded_str) => {
+                                        self.encoding
+                                            .render_text_into(&decoded_str, content_tokens)?;
+                                        self.last_content_delta = Some(decoded_str);
+                                        self.undecoded_bytes.clear();
+                                    }
+                                    Err(e) => {
+                                        let utf8_error = e.utf8_error();
+                                        let decoded_bytes = e.into_bytes();
+
+                                        let valid_len = utf8_error.valid_up_to();
+
+                                        let mut content_delta = String::new();
+                                        if valid_len > 0 {
+                                            let valid_str = String::from_utf8(
+                                                decoded_bytes[..valid_len].to_vec(),
+                                            )
+                                            .unwrap();
+                                            self.encoding
+                                                .render_text_into(&valid_str, content_tokens)?;
+                                            content_delta.push_str(&valid_str);
+                                            self.undecoded_bytes.drain(..valid_len);
+                                        }
+
+                                        match utf8_error.error_len() {
+                                            Some(error_len) => {
+                                                let replacement = '\u{FFFD}'.to_string();
+                                                self.encoding.render_text_into(
+                                                    &replacement,
+                                                    content_tokens,
+                                                )?;
+                                                content_delta.push_str(&replacement);
+                                                self.undecoded_bytes.drain(..error_len);
+                                            }
+                                            None => {
+                                                // waiting on next byte in our utf-8 sequence
+                                                self.last_content_delta = None;
+                                            }
+                                        }
+
+                                        if !content_delta.is_empty() {
+                                            self.last_content_delta = Some(content_delta);
+                                        }
+                                    }
+                                }
                                 self.undecoded_tokens.clear();
                             }
                             Err(_) => {
+                                // Invalid bytes, so wait on the next token
                                 self.last_content_delta = None;
                             }
                         }
@@ -1167,7 +1215,13 @@ impl StreamableParser {
                     true
                 };
                 if is_eos {
-                    let text = self.encoding.tokenizer().decode_utf8(content_tokens)?;
+                    let content_text = self.encoding.tokenizer().decode_utf8(content_tokens)?;
+                    let tokens_text = self
+                        .encoding
+                        .tokenizer()
+                        .decode_utf8(self.undecoded_tokens.clone())?;
+                    let bytes_text = String::from_utf8_lossy(&self.undecoded_bytes);
+                    let text = content_text + &tokens_text + &bytes_text;
                     let message = Message {
                         author: header.author.clone(),
                         recipient: header.recipient.clone(),

@@ -6,7 +6,7 @@ mod registry;
 mod tiktoken;
 pub mod tiktoken_ext;
 
-pub use encoding::{HarmonyEncoding, StreamableParser};
+pub use encoding::{HarmonyEncoding, ParseOptions, StreamableParser};
 pub use registry::load_harmony_encoding;
 pub use registry::HarmonyEncodingName;
 

@@ -369,6 +369,23 @@ impl HarmonyEncoding {
         Ok(())
     }
 
+    pub fn parse_messages_from_completion_tokens_with_options<I>(
+        &self,
+        tokens: I,
+        role: Option<Role>,
+        options: ParseOptions,
+    ) -> anyhow::Result<Vec<Message>>
+    where
+        I: IntoIterator<Item = Rank>,
+    {
+        let mut parser = StreamableParser::new_with_options(self.clone(), role, options)?;
+        for token in tokens {
+            parser.process(token)?;
+        }
+        parser.process_eos()?;
+        Ok(parser.into_messages())
+    }
+
     pub fn parse_messages_from_completion_tokens<I>(
         &self,
         tokens: I,
@@ -377,12 +394,11 @@ impl HarmonyEncoding {
     where
         I: IntoIterator<Item = Rank>,
     {
-        let mut parser = StreamableParser::new(self.clone(), role)?;
-        for token in tokens {
-            parser.process(token)?;
-        }
-        parser.process_eos()?;
-        Ok(parser.into_messages())
+        self.parse_messages_from_completion_tokens_with_options(
+            tokens,
+            role,
+            ParseOptions::default(),
+        )
     }
 
     /// Helper to convert a JSON schema (OpenAPI style) to a TypeScript type definition.
@@ -1019,6 +1035,17 @@ impl Render<crate::chat::DeveloperContent> for HarmonyEncoding {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct ParseOptions {
+    pub strict: bool,
+}
+
+impl Default for ParseOptions {
+    fn default() -> Self {
+        Self { strict: true }
+    }
+}
+
 /// Incremental parser that can consume tokens one by one.
 ///
 /// It keeps track of all tokens seen so far, exposes all fully parsed messages
@@ -1032,6 +1059,7 @@ pub struct StreamableParser {
     stop_tokens: HashSet<Rank>,
     last_content_delta: Option<String>,
     undecoded_tokens: Vec<Rank>,
+    options: ParseOptions,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -1049,6 +1077,15 @@ pub enum StreamState {
 impl StreamableParser {
     /// Create a new streaming parser starting with the given role.
     pub fn new(encoding: HarmonyEncoding, role: Option<Role>) -> anyhow::Result<Self> {
+        Self::new_with_options(encoding, role, ParseOptions::default())
+    }
+
+    /// Create a new streaming parser with explicit options.
+    pub fn new_with_options(
+        encoding: HarmonyEncoding,
+        role: Option<Role>,
+        options: ParseOptions,
+    ) -> anyhow::Result<Self> {
         let stop_tokens = encoding.stop_tokens()?;
         let (state, next_role) = match role {
             Some(role) => (
@@ -1068,6 +1105,7 @@ impl StreamableParser {
             stop_tokens,
             last_content_delta: None,
             undecoded_tokens: Vec::new(),
+            options,
         })
     }
 
@@ -1123,7 +1161,7 @@ impl StreamableParser {
                             content_tokens: Vec::new(),
                         };
                     }
-                    Some(token) if self.stop_tokens.contains(&token) => {
+                    Some(token) if !self.options.strict && self.stop_tokens.contains(&token) => {
                         // Encountered a stop token while in Header state. This means we have
                         // accumulated header tokens but never saw a <|message|> token, so the
                         // message is malformed. If we have a role, parse header metadata and

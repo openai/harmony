@@ -983,7 +983,8 @@ def test_streamable_parser_tool_call_with_constrain_adjacent():
     assert parser.messages == expected
 
 
-def test_streamable_parser_missing_message_token():
+@pytest.mark.parametrize("strict, expect_error", [(False, False), (True, True)])
+def test_streamable_parser_missing_message_token(strict: bool, expect_error: bool):
     encoding = load_harmony_encoding(HarmonyEncodingName.HARMONY_GPT_OSS)
 
     text = (
@@ -992,7 +993,14 @@ def test_streamable_parser_missing_message_token():
         "<|start|>assistant<|channel|>final<|message|>I'm sorry, but I can't help with that.<|return|>"
     )
     tokens = encoding.encode(text, allowed_special="all")
-    parser = StreamableParser(encoding, Role.ASSISTANT)
+    parser = StreamableParser(encoding, Role.ASSISTANT, strict=strict)
+
+    if expect_error:
+        with pytest.raises(HarmonyError, match="unexpected tokens remaining in message header"):
+            for token in tokens:
+                parser.process(token)
+        return
+
     for token in tokens:
         parser.process(token)
 
@@ -1008,7 +1016,10 @@ def test_streamable_parser_missing_message_token():
     assert parser.messages == expected
 
 
-def test_streamable_parser_missing_message_token_other_initial_headers():
+@pytest.mark.parametrize("strict, expect_error", [(False, False), (True, True)])
+def test_streamable_parser_missing_message_token_other_initial_headers(
+    strict: bool, expect_error: bool
+):
     encoding = load_harmony_encoding(HarmonyEncodingName.HARMONY_GPT_OSS)
 
     text = (
@@ -1017,7 +1028,14 @@ def test_streamable_parser_missing_message_token_other_initial_headers():
         "<|start|>assistant<|channel|>final<|message|>I'm sorry, but I can't help with that.<|return|>"
     )
     tokens = encoding.encode(text, allowed_special="all")
-    parser = StreamableParser(encoding, Role.ASSISTANT)
+    parser = StreamableParser(encoding, Role.ASSISTANT, strict=strict)
+
+    if expect_error:
+        with pytest.raises(HarmonyError, match="unexpected tokens remaining in message header"):
+            for token in tokens:
+                parser.process(token)
+        return
+
     for token in tokens:
         parser.process(token)
 
@@ -1035,7 +1053,10 @@ def test_streamable_parser_missing_message_token_other_initial_headers():
     assert parser.messages == expected
 
 
-def test_streamable_parser_missing_message_token_tool_call():
+@pytest.mark.parametrize("strict, expect_error", [(False, False), (True, True)])
+def test_streamable_parser_missing_message_token_tool_call(
+    strict: bool, expect_error: bool
+):
     encoding = load_harmony_encoding(HarmonyEncodingName.HARMONY_GPT_OSS)
 
     text = (
@@ -1044,7 +1065,14 @@ def test_streamable_parser_missing_message_token_tool_call():
         '<|message|>{"location": "Tokyo"}<|call|>'
     )
     tokens = encoding.encode(text, allowed_special="all")
-    parser = StreamableParser(encoding, Role.ASSISTANT)
+    parser = StreamableParser(encoding, Role.ASSISTANT, strict=strict)
+
+    if expect_error:
+        with pytest.raises(HarmonyError, match="unexpected tokens remaining in message header"):
+            for token in tokens:
+                parser.process(token)
+        return
+
     for token in tokens:
         parser.process(token)
 

@@ -107,8 +107,12 @@ convo = Conversation.from_messages(
 tokens = encoding.render_conversation_for_completion(convo, Role.ASSISTANT)
 
 # After receiving a token response
-# Do not pass in the stop token
-parsed_response = encoding.parse_messages_from_completion_tokens(new_tokens, Role.ASSISTANT)
+# Do not pass in the stop token. Set strict=False to tolerate malformed headers.
+parsed_response = encoding.parse_messages_from_completion_tokens(
+    new_tokens,
+    Role.ASSISTANT,
+    strict=True,
+)
 ```
 
 Additionally the openai_harmony library also includes a StreamableParser for parsing and decoding as the model is generating new tokens. This can be helpful for example to stream output and handle unicode characters during decoding.
@@ -269,7 +273,7 @@ If you are not using function tool calling your developer message would just loo
 
 Where `{instructions}` is replaced with your “system prompt”.
 
-For defining function calling tools, [check out the dedicated section](#function-calling).  
+For defining function calling tools, [check out the dedicated section](#function-calling).
 For defining an output format to be used in structured outputs, [check out this section of the guide](#structured-output).
 
 ### Reasoning
@@ -301,7 +305,7 @@ And the actual answer is:
 2 + 2 = 4
 ```
 
-**Important:**  
+**Important:**
 The model has not been trained to the same safety standards in the chain-of-thought as it has for final output. We recommend not to show the chain-of-thought to your users as they might contain harmful content. [Learn more in the model card](https://openai.com/index/gpt-oss-model-card/).
 
 #### Handling reasoning output in subsequent sampling

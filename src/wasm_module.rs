@@ -2,7 +2,7 @@ use wasm_bindgen::prelude::*;
 
 use crate::{
     chat::{Message, Role, ToolNamespaceConfig},
-    encoding::{HarmonyEncoding, StreamableParser},
+    encoding::{HarmonyEncoding, ParseOptions, StreamableParser},
     load_harmony_encoding as inner_load_harmony_encoding, HarmonyEncodingName,
 };
 
@@ -166,6 +166,7 @@ impl JsHarmonyEncoding {
         &self,
         tokens: Vec<u32>,
         role: Option<String>,
+        strict: Option<bool>,
     ) -> Result<String, JsValue> {
         let role_parsed = if let Some(r) = role {
             Some(
@@ -175,9 +176,12 @@ impl JsHarmonyEncoding {
         } else {
             None
         };
+        let options = ParseOptions {
+            strict: strict.unwrap_or(true),
+        };
         let messages: Vec<Message> = self
             .inner
-            .parse_messages_from_completion_tokens(tokens, role_parsed)
+            .parse_messages_from_completion_tokens_with_options(tokens, role_parsed, options)
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
         serde_json::to_string(&messages)
             .map_err(|e| JsValue::from_str(&format!("failed to serialise messages to JSON: {e}")))
@@ -253,11 +257,19 @@ pub struct JsStreamableParser {
 #[wasm_bindgen]
 impl JsStreamableParser {
     #[wasm_bindgen(constructor)]
-    pub fn new(encoding: &JsHarmonyEncoding, role: &str) -> Result<JsStreamableParser, JsValue> {
+    pub fn new(
+        encoding: &JsHarmonyEncoding,
+        role: &str,
+        strict: Option<bool>,
+    ) -> Result<JsStreamableParser, JsValue> {
         let parsed_role = Role::try_from(role)
             .map_err(|_| JsValue::from_str(&format!("unknown role: {role}")))?;
-        let inner = StreamableParser::new(encoding.inner.clone(), Some(parsed_role))
-            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let options = ParseOptions {
+            strict: strict.unwrap_or(true),
+        };
+        let inner =
+            StreamableParser::new_with_options(encoding.inner.clone(), Some(parsed_role), options)
+                .map_err(|e| JsValue::from_str(&e.to_string()))?;
         Ok(Self { inner })
     }
 

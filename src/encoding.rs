@@ -369,6 +369,23 @@ impl HarmonyEncoding {
         Ok(())
     }
 
+    pub fn parse_messages_from_completion_tokens_with_options<I>(
+        &self,
+        tokens: I,
+        role: Option<Role>,
+        options: ParseOptions,
+    ) -> anyhow::Result<Vec<Message>>
+    where
+        I: IntoIterator<Item = Rank>,
+    {
+        let mut parser = StreamableParser::new_with_options(self.clone(), role, options)?;
+        for token in tokens {
+            parser.process(token)?;
+        }
+        parser.process_eos()?;
+        Ok(parser.into_messages())
+    }
+
     pub fn parse_messages_from_completion_tokens<I>(
         &self,
         tokens: I,
@@ -377,12 +394,11 @@ impl HarmonyEncoding {
     where
         I: IntoIterator<Item = Rank>,
     {
-        let mut parser = StreamableParser::new(self.clone(), role)?;
-        for token in tokens {
-            parser.process(token)?;
-        }
-        parser.process_eos()?;
-        Ok(parser.into_messages())
+        self.parse_messages_from_completion_tokens_with_options(
+            tokens,
+            role,
+            ParseOptions::default(),
+        )
     }
 
     /// Helper to convert a JSON schema (OpenAPI style) to a TypeScript type definition.
@@ -1019,6 +1035,17 @@ impl Render<crate::chat::DeveloperContent> for HarmonyEncoding {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct ParseOptions {
+    pub strict: bool,
+}
+
+impl Default for ParseOptions {
+    fn default() -> Self {
+        Self { strict: true }
+    }
+}
+
 /// Incremental parser that can consume tokens one by one.
 ///
 /// It keeps track of all tokens seen so far, exposes all fully parsed messages
@@ -1032,6 +1059,7 @@ pub struct StreamableParser {
     stop_tokens: HashSet<Rank>,
     last_content_delta: Option<String>,
     undecoded_tokens: Vec<Rank>,
+    options: ParseOptions,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -1049,6 +1077,15 @@ pub enum StreamState {
 impl StreamableParser {
     /// Create a new streaming parser starting with the given role.
     pub fn new(encoding: HarmonyEncoding, role: Option<Role>) -> anyhow::Result<Self> {
+        Self::new_with_options(encoding, role, ParseOptions::default())
+    }
+
+    /// Create a new streaming parser with explicit options.
+    pub fn new_with_options(
+        encoding: HarmonyEncoding,
+        role: Option<Role>,
+        options: ParseOptions,
+    ) -> anyhow::Result<Self> {
         let stop_tokens = encoding.stop_tokens()?;
         let (state, next_role) = match role {
             Some(role) => (
@@ -1068,6 +1105,7 @@ impl StreamableParser {
             stop_tokens,
             last_content_delta: None,
             undecoded_tokens: Vec::new(),
+            options,
         })
     }
 
@@ -1122,6 +1160,34 @@ impl StreamableParser {
                             header,
                             content_tokens: Vec::new(),
                         };
+                    }
+                    Some(token) if !self.options.strict && self.stop_tokens.contains(&token) => {
+                        // Encountered a stop token while in Header state. This means we have
+                        // accumulated header tokens but never saw a <|message|> token, so the
+                        // message is malformed. If we have a role, parse header metadata and
+                        // treat remaining tokens as content.
+                        if let Some(role) = next_role_clone {
+                            if !header_tokens.is_empty() {
+                                let decoded =
+                                    self.encoding.tokenizer().decode_utf8(header_tokens)?;
+                                let (header, remaining_content) =
+                                    self.parse_header_from_string(decoded, Some(role), false)?;
+
+                                // Use remaining content if present, otherwise empty string
+                                let text = remaining_content.unwrap_or_default();
+                                let message = Message {
+                                    author: header.author.clone(),
+                                    recipient: header.recipient.clone(),
+                                    channel: header.channel.clone(),
+                                    content_type: header.content_type.clone(),
+                                    content: vec![Content::Text(TextContent { text })],
+                                };
+                                self.messages.push(message);
+                            }
+                        }
+                        // Transition to ExpectStart to wait for the next message
+                        self.state = StreamState::ExpectStart;
+                        self.next_role = None;
                     }
                     Some(token) => {
                         header_tokens.push(token);
@@ -1194,17 +1260,18 @@ impl StreamableParser {
         Ok(self)
     }
 
-    fn parse_header_from_tokens(
+    /// Helper to parse header metadata from a decoded string.
+    /// Returns the parsed header and any remaining content after extracting header parts.
+    ///
+    /// If `parse_recipient_and_type` is true, tries to parse recipient and content_type from
+    /// whitespace-separated tokens (normal header parsing). If false, treats all remaining
+    /// text after extracting channel as content (for malformed messages).
+    fn parse_header_from_string(
         &self,
-        header_tokens: &[Rank],
+        mut header_string: String,
         role: Option<Role>,
-    ) -> anyhow::Result<ParsedHeader> {
-        let mut header_string = self
-            .encoding
-            .tokenizer()
-            .decode_utf8(header_tokens)
-            .context("could not decode header")?;
-
+        parse_recipient_and_type: bool,
+    ) -> anyhow::Result<(ParsedHeader, Option<String>)> {
         let mut channel: Option<String> = None;
         if let Some(channel_marker) = self.encoding.mapped_format_token(FormattingToken::Channel) {
             if let Some(idx) = header_string.find(channel_marker) {
@@ -1280,10 +1347,9 @@ impl StreamableParser {
 
         let mut recipient: Option<String> = None;
         let mut content_type: Option<String> = None;
+        let remaining_content: Option<String>;
 
-        if !parts.is_empty() {
-            // Determine whether the last token is a content-type or part of the
-            // recipient specification.
+        if parse_recipient_and_type && !parts.is_empty() {
             let num_parts = parts.len();
             // SAFETY: we know that there is at least one part remaining, because of is_empty check above
             let last_part = parts.pop().unwrap();
@@ -1308,12 +1374,21 @@ impl StreamableParser {
                     };
                 }
             }
+
+            // Any remaining parts are content (not header metadata)
+            remaining_content = if !parts.is_empty() {
+                Some(parts.join(" "))
+            } else {
+                None
+            };
+        } else {
+            // Treat all remaining parts as content when not parsing recipient and content type
+            remaining_content = if !parts.is_empty() {
+                Some(parts.join(" "))
+            } else {
+                None
+            };
         }
-        anyhow::ensure!(
-            parts.is_empty(),
-            "unexpected tokens remaining in message header: {:?}",
-            parts
-        );
 
         let author = if role == Role::Tool {
             let name = role_str_opt;
@@ -1321,12 +1396,39 @@ impl StreamableParser {
         } else {
             Author { role, name: None }
         };
-        Ok(ParsedHeader {
-            author,
-            recipient,
-            channel,
-            content_type,
-        })
+        Ok((
+            ParsedHeader {
+                author,
+                recipient,
+                channel,
+                content_type,
+            },
+            remaining_content,
+        ))
+    }
+
+    fn parse_header_from_tokens(
+        &self,
+        header_tokens: &[Rank],
+        role: Option<Role>,
+    ) -> anyhow::Result<ParsedHeader> {
+        let header_string = self
+            .encoding
+            .tokenizer()
+            .decode_utf8(header_tokens)
+            .context("could not decode header")?;
+
+        let (header, remaining_content) =
+            self.parse_header_from_string(header_string, role, true)?;
+
+        if remaining_content.is_some() {
+            anyhow::bail!(
+                "unexpected tokens remaining in message header: {:?}",
+                remaining_content
+            );
+        }
+
+        Ok(header)
     }
 
     /// Return the textual content of the current message so far.

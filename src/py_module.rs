@@ -27,7 +27,7 @@ create_exception!(openai_harmony, HarmonyError, PyRuntimeError);
 
 use crate::{
     chat::{Message, Role, ToolNamespaceConfig},
-    encoding::{HarmonyEncoding, StreamableParser},
+    encoding::{HarmonyEncoding, ParseOptions, StreamableParser},
     load_harmony_encoding, HarmonyEncodingName,
 };
 
@@ -212,6 +212,7 @@ impl PyHarmonyEncoding {
         &self,
         tokens: Vec<u32>,
         role: Option<&str>,
+        strict: Option<bool>,
     ) -> PyResult<String> {
         let role_parsed = if let Some(r) = role {
             Some(Role::try_from(r).map_err(|_| {
@@ -221,9 +222,13 @@ impl PyHarmonyEncoding {
             None
         };
 
+        let options = ParseOptions {
+            strict: strict.unwrap_or(true),
+        };
+
         let messages: Vec<Message> = self
             .inner
-            .parse_messages_from_completion_tokens(tokens, role_parsed)
+            .parse_messages_from_completion_tokens_with_options(tokens, role_parsed, options)
             .map_err(|e| PyErr::new::<HarmonyError, _>(e.to_string()))?;
 
         serde_json::to_string(&messages).map_err(|e| {
@@ -297,7 +302,11 @@ impl PyHarmonyEncoding {
 #[pymethods]
 impl PyStreamableParser {
     #[new]
-    fn new(encoding: &PyHarmonyEncoding, role: Option<&str>) -> PyResult<Self> {
+    fn new(
+        encoding: &PyHarmonyEncoding,
+        role: Option<&str>,
+        strict: Option<bool>,
+    ) -> PyResult<Self> {
         let parsed_role = role
             .map(|r| {
                 Role::try_from(r).map_err(|_| {
@@ -305,8 +314,12 @@ impl PyStreamableParser {
                 })
             })
             .transpose()?;
-        let inner = StreamableParser::new(encoding.inner.clone(), parsed_role)
-            .map_err(|e| PyErr::new::<HarmonyError, _>(e.to_string()))?;
+        let options = ParseOptions {
+            strict: strict.unwrap_or(true),
+        };
+        let inner =
+            StreamableParser::new_with_options(encoding.inner.clone(), parsed_role, options)
+                .map_err(|e| PyErr::new::<HarmonyError, _>(e.to_string()))?;
         Ok(Self { inner })
     }
 

@@ -981,3 +981,110 @@ def test_streamable_parser_tool_call_with_constrain_adjacent():
     ]
 
     assert parser.messages == expected
+
+
+@pytest.mark.parametrize("strict, expect_error", [(False, False), (True, True)])
+def test_streamable_parser_missing_message_token(strict: bool, expect_error: bool):
+    encoding = load_harmony_encoding(HarmonyEncodingName.HARMONY_GPT_OSS)
+
+    text = (
+        "I must refuse<|end|>"
+        "<|start|>assistant<|channel|>analysis<|message|>We must refuse<|end|>"
+        "<|start|>assistant<|channel|>final<|message|>I'm sorry, but I can't help with that.<|return|>"
+    )
+    tokens = encoding.encode(text, allowed_special="all")
+    parser = StreamableParser(encoding, Role.ASSISTANT, strict=strict)
+
+    if expect_error:
+        with pytest.raises(HarmonyError, match="unexpected tokens remaining in message header"):
+            for token in tokens:
+                parser.process(token)
+        return
+
+    for token in tokens:
+        parser.process(token)
+
+    expected = [
+        Message.from_role_and_content(Role.ASSISTANT, "I must refuse"),
+        Message.from_role_and_content(Role.ASSISTANT, "We must refuse").with_channel(
+            "analysis"
+        ),
+        Message.from_role_and_content(
+            Role.ASSISTANT, "I'm sorry, but I can't help with that."
+        ).with_channel("final"),
+    ]
+    assert parser.messages == expected
+
+
+@pytest.mark.parametrize("strict, expect_error", [(False, False), (True, True)])
+def test_streamable_parser_missing_message_token_other_initial_headers(
+    strict: bool, expect_error: bool
+):
+    encoding = load_harmony_encoding(HarmonyEncodingName.HARMONY_GPT_OSS)
+
+    text = (
+        "<|channel|>analysis I must refuse<|end|>"
+        "<|start|>assistant<|channel|>analysis<|message|>We must refuse<|end|>"
+        "<|start|>assistant<|channel|>final<|message|>I'm sorry, but I can't help with that.<|return|>"
+    )
+    tokens = encoding.encode(text, allowed_special="all")
+    parser = StreamableParser(encoding, Role.ASSISTANT, strict=strict)
+
+    if expect_error:
+        with pytest.raises(HarmonyError, match="unexpected tokens remaining in message header"):
+            for token in tokens:
+                parser.process(token)
+        return
+
+    for token in tokens:
+        parser.process(token)
+
+    expected = [
+        Message.from_role_and_content(Role.ASSISTANT, "I must refuse").with_channel(
+            "analysis"
+        ),
+        Message.from_role_and_content(Role.ASSISTANT, "We must refuse").with_channel(
+            "analysis"
+        ),
+        Message.from_role_and_content(
+            Role.ASSISTANT, "I'm sorry, but I can't help with that."
+        ).with_channel("final"),
+    ]
+    assert parser.messages == expected
+
+
+@pytest.mark.parametrize("strict, expect_error", [(False, False), (True, True)])
+def test_streamable_parser_missing_message_token_tool_call(
+    strict: bool, expect_error: bool
+):
+    encoding = load_harmony_encoding(HarmonyEncodingName.HARMONY_GPT_OSS)
+
+    text = (
+        "... Let's use the tool.<|end|>"
+        "<|start|>assistant to=functions.get_weather<|channel|>commentary json"
+        '<|message|>{"location": "Tokyo"}<|call|>'
+    )
+    tokens = encoding.encode(text, allowed_special="all")
+    parser = StreamableParser(encoding, Role.ASSISTANT, strict=strict)
+
+    if expect_error:
+        with pytest.raises(HarmonyError, match="unexpected tokens remaining in message header"):
+            for token in tokens:
+                parser.process(token)
+        return
+
+    for token in tokens:
+        parser.process(token)
+
+    expected = [
+        Message.from_role_and_content(
+            Role.ASSISTANT, "... Let's use the tool."
+        ),
+        Message.from_role_and_content(
+            Role.ASSISTANT, '{"location": "Tokyo"}'
+        )
+        .with_channel("commentary")
+        .with_recipient("functions.get_weather")
+        .with_content_type("json"),
+    ]
+    assert parser.messages == expected

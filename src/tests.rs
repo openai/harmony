@@ -7,7 +7,7 @@ use crate::{
     },
     load_harmony_encoding,
     tiktoken::{CoreBPE, Rank},
-    HarmonyEncodingName, StreamableParser,
+    HarmonyEncodingName, ParseOptions, StreamableParser,
 };
 use pretty_assertions::{assert_eq, Comparison};
 use serde_json::json;
@@ -671,6 +671,36 @@ fn test_streamable_parser_tool_call_with_constrain_adjacent() {
         .with_recipient("functions.get_weather")
         .with_content_type("<|constrain|>json"),
         parser.messages()[0]
+    );
+}
+
+#[test]
+fn test_missing_message_token_requires_non_strict_mode() {
+    let encoding = load_harmony_encoding(HarmonyEncodingName::HarmonyGptOss).unwrap();
+    let malformed = "<|channel|>commentary Hello<|end|>";
+    let tokens = encoding.tokenizer().encode_with_special_tokens(malformed);
+
+    // Strict mode should continue to error on malformed headers.
+    let strict_result = encoding
+        .parse_messages_from_completion_tokens(tokens.iter().copied(), Some(Role::Assistant));
+    assert!(
+        strict_result.is_err(),
+        "expected strict parser to reject malformed header"
+    );
+
+    // Non-strict mode should recover and return the accumulated message content.
+    let parsed = encoding
+        .parse_messages_from_completion_tokens_with_options(
+            tokens.iter().copied(),
+            Some(Role::Assistant),
+            ParseOptions { strict: false },
+        )
+        .expect("non-strict parser should recover from malformed header");
+
+    assert_eq!(parsed.len(), 1);
+    assert_eq!(
+        parsed[0],
+        Message::from_role_and_content(Role::Assistant, "Hello").with_channel("commentary")
     );
 }
 

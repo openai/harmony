@@ -9,6 +9,8 @@ use std::{
     vec,
 };
 
+const REPLACEMENT: &str = "\u{FFFD}";
+
 // Parsed representation of a message header.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ParsedHeader {
@@ -1247,12 +1249,11 @@ impl StreamableParser {
 
                                         match utf8_error.error_len() {
                                             Some(error_len) => {
-                                                let replacement = '\u{FFFD}'.to_string();
                                                 self.encoding.render_text_into(
-                                                    &replacement,
+                                                    REPLACEMENT,
                                                     content_tokens,
                                                 )?;
-                                                content_delta.push_str(&replacement);
+                                                content_delta.push_str(REPLACEMENT);
                                                 self.undecoded_bytes.drain(..error_len);
                                             }
                                             None => {
@@ -1269,7 +1270,7 @@ impl StreamableParser {
                                 self.undecoded_tokens.clear();
                             }
                             Err(_) => {
-                                // Invalid bytes, so wait on the next token
+                                // Bytes not yet valid utf-8, wait on the next token
                                 self.last_content_delta = None;
                             }
                         }
@@ -1281,11 +1282,18 @@ impl StreamableParser {
                     true
                 };
                 if is_eos {
+                    // Our rendered content tokens are valid utf-8, so we can decode them directly
                     let content_text = self.encoding.tokenizer().decode_utf8(content_tokens)?;
-                    let tokens_text = self
+                    // Decode any remaining undecoded tokens, replacing any invalid tokens with the replacement character
+                    let tokens_text = match self
                         .encoding
                         .tokenizer()
-                        .decode_utf8(self.undecoded_tokens.clone())?;
+                        .decode_utf8(self.undecoded_tokens.clone())
+                    {
+                        Ok(text) => text,
+                        Err(_) => REPLACEMENT.to_string(),
+                    };
+                    // Decode any remaining undecoded bytes, replacing any invalid bytes with the replacement character
                     let bytes_text = String::from_utf8_lossy(&self.undecoded_bytes);
                     let text = content_text + &tokens_text + &bytes_text;
                     let message = Message {
@@ -1299,6 +1307,7 @@ impl StreamableParser {
                     self.state = StreamState::ExpectStart;
                     self.last_content_delta = None;
                     self.undecoded_tokens.clear();
+                    self.undecoded_bytes.clear();
                 }
             }
         }

@@ -520,10 +520,14 @@ class HarmonyEncoding:
     # -- Parsing -------------------------------------------------------
 
     def parse_messages_from_completion_tokens(
-        self, tokens: Sequence[int], role: Optional[Role] | None = None
+        self,
+        tokens: Sequence[int],
+        role: Optional[Role] | None = None,
+        *,
+        strict: bool = True,
     ) -> List[Message]:
         raw_json: str = self._inner.parse_messages_from_completion_tokens(
-            list(tokens), None if role is None else str(role.value)
+            list(tokens), None if role is None else str(role.value), strict
         )
         return [Message.from_dict(m) for m in json.loads(raw_json)]
 
@@ -619,9 +623,15 @@ class StreamState(Enum):
 class StreamableParser:
     """Incremental parser over completion tokens."""
 
-    def __init__(self, encoding: HarmonyEncoding, role: Role | None):
+    def __init__(
+        self,
+        encoding: HarmonyEncoding,
+        role: Role | None,
+        *,
+        strict: bool = True,
+    ) -> None:
         role_str = str(role.value) if role is not None else None
-        self._inner = _PyStreamableParser(encoding._inner, role_str)
+        self._inner = _PyStreamableParser(encoding._inner, role_str, strict)
 
     def process(self, token: int) -> "StreamableParser":
         self._inner.process(token)

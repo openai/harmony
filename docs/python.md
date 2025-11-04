@@ -107,12 +107,14 @@ Methods:
 - `render_conversation_for_training(conversation, config=None)` – render a conversation for training.
 - `render_conversation(conversation, config=None)` – render a conversation without appending a new role.
 - `render(message)` – render a single message into tokens.
-- `parse_messages_from_completion_tokens(tokens, role=None)` – parse tokens back into `Message` objects.
+- `parse_messages_from_completion_tokens(tokens, role=None, strict=True)` – parse tokens back into `Message` objects (set `strict=False` to enable permissive parsing).
 - `decode_utf8(tokens)` – decode tokens with the underlying tokenizer.
 - `stop_tokens()` / `stop_tokens_for_assistant_actions()` – lists of stop tokens.
 
+Use `strict=False` when you need the parser to recover from malformed model output that omits markers such as `<|message|>`.
+
 ### `StreamableParser`
-Incremental parser built on top of an encoding. Construct with `StreamableParser(encoding, role)` and feed tokens via `process(token)`.  Inspect state via properties like `current_content`, `current_role`, `tokens` and `state`.
+Incremental parser built on top of an encoding. Construct with `StreamableParser(encoding, role)` and feed tokens via `process(token)`.  Inspect state via properties like `current_content`, `current_role`, `tokens` and `state`. Pass `strict=False` to enable permissive parsing (mirrors `ParseOptions { strict: false }` on the Rust side).
 
 ### `load_harmony_encoding(name)`
 Return a `HarmonyEncoding` by name.  Accepts either the string name or a value from the `HarmonyEncodingName` enum (`HARMONY_GPT_OSS`).

@@ -739,3 +739,150 @@ fn test_tool_call_with_channel_before_recipient_and_constrain_adjacent() {
     .with_content_type("<|constrain|>json")];
     assert_eq!(parsed, expected);
 }
+
+#[test]
+fn test_streamable_parser_does_not_leak_bytes_between_messages() {
+    // This test ensures that any partially decoded bytes from the first message
+    // do not leak into the content of the next message.
+    let encoding = load_harmony_encoding(HarmonyEncodingName::HarmonyGptOss).unwrap();
+
+    // 9552 is known (in this tokenizer) to expand to bytes that form an incomplete
+    // UTF-8 sequence when used alone, which exercises the streaming invalid-UTF-8 path.
+    // Construct two assistant messages back-to-back where the first includes invalid
+    // UTF-8 bytes and the second is simple ASCII text.
+    let first_prefix = "<|start|>assistant<|message|>";
+    let first_suffix = "<|end|>";
+    let second_prefix = "<|start|>assistant<|message|>";
+    let second_suffix = "<|end|>";
+
+    let mut tokens = Vec::new();
+    tokens.extend(
+        encoding
+            .tokenizer()
+            .encode_with_special_tokens(first_prefix),
+    );
+    // Two invalid tokens to ensure we end the first message with incomplete UTF-8 bytes.
+    tokens.push(9552);
+    tokens.push(9552);
+    tokens.extend(
+        encoding
+            .tokenizer()
+            .encode_with_special_tokens(first_suffix),
+    );
+
+    // Second message should be clean and unaffected.
+    tokens.extend(
+        encoding
+            .tokenizer()
+            .encode_with_special_tokens(second_prefix),
+    );
+    tokens.extend(encoding.tokenizer().encode_with_special_tokens("Hi"));
+    tokens.extend(
+        encoding
+            .tokenizer()
+            .encode_with_special_tokens(second_suffix),
+    );
+
+    let mut parser = StreamableParser::new(encoding, None).unwrap();
+    for t in tokens {
+        parser.process(t).unwrap();
+    }
+
+    let messages = parser.messages();
+    assert_eq!(messages.len(), 2, "expected two parsed messages");
+
+    // Verify the second message content is exactly "Hi" (no leaked replacement chars or bytes).
+    let second = &messages[1];
+    let expected_second = Message::from_role_and_content(Role::Assistant, "Hi");
+    assert_eq!(
+        second, &expected_second,
+        "second message must be clean and isolated"
+    );
+}
+
+#[test]
+fn test_streamable_parser_flushes_partial_bytes_on_eos() {
+    let encoding = load_harmony_encoding(HarmonyEncodingName::HarmonyGptOss).unwrap();
+
+    let mut tokens = encoding
+        .tokenizer()
+        .encode_with_special_tokens("<|start|>assistant<|message|>");
+    tokens.push(9552);
+    tokens.extend(encoding.tokenizer().encode_with_special_tokens("Hi"));
+
+    let mut parser = StreamableParser::new(encoding.clone(), None).unwrap();
+    for token in tokens {
+        parser.process(token).unwrap();
+    }
+    parser.process_eos().unwrap();
+
+    let messages = parser.messages();
+    assert_eq!(messages.len(), 1, "expected a single message after EOS");
+    let expected = Message::from_role_and_content(Role::Assistant, " \u{FFFD}Hi");
+    assert_eq!(messages[0], expected);
+    assert_eq!(parser.last_content_delta().unwrap(), None);
+    assert_eq!(parser.current_content().unwrap(), "");
+}
+
+#[test]
+fn test_streamable_parser_waits_for_multi_token_utf8_sequence() {
+    use std::collections::HashSet;
+
+    let encoding = load_harmony_encoding(HarmonyEncodingName::HarmonyGptOss).unwrap();
+    let mut parser = StreamableParser::new(encoding.clone(), None).unwrap();
+
+    let start_tokens = encoding
+        .tokenizer()
+        .encode_with_special_tokens("<|start|>assistant<|message|>");
+    for token in &start_tokens {
+        parser.process(*token).unwrap();
+    }
+
+    let emoji_tokens = encoding.tokenizer().encode("💖", &HashSet::new()).0;
+    assert!(
+        emoji_tokens.len() >= 2,
+        "expected multi-token emoji encoding"
+    );
+
+    parser.process(emoji_tokens[0]).unwrap();
+    assert_eq!(parser.last_content_delta().unwrap(), None);
+    assert_eq!(parser.current_content().unwrap(), "");
+
+    parser.process(emoji_tokens[1]).unwrap();
+    assert_eq!(parser.last_content_delta().unwrap(), Some("💖".to_string()));
+    assert_eq!(parser.current_content().unwrap(), "💖");
+
+    let end_tokens = encoding.tokenizer().encode_with_special_tokens("<|end|>");
+    for token in end_tokens {
+        parser.process(token).unwrap();
+    }
+
+    let messages = parser.messages();
+    assert_eq!(messages.len(), 1, "expected a single completed message");
+    let expected = Message::from_role_and_content(Role::Assistant, "💖");
+    assert_eq!(messages[0], expected);
+}
+
+#[test]
+fn test_parse_completion_with_invalid_content_token_errors_on_eos() {
+    let encoding = load_harmony_encoding(HarmonyEncodingName::HarmonyGptOss).unwrap();
+    let mut parser = StreamableParser::new(encoding.clone(), None).unwrap();
+
+    let start_tokens = encoding.tokenizer().encode_with_special_tokens(
+        "<|start|>assistant<|channel|>analysis<|message|>Practice invalid token handling.",
+    );
+    for token in &start_tokens {
+        parser.process(*token).unwrap();
+    }
+
+    parser.process(u32::MAX).unwrap();
+    parser.process_eos().unwrap();
+
+    let messages = parser.messages();
+    assert_eq!(messages.len(), 1);
+    let parsed_message = &messages[0];
+    let expected_message =
+        Message::from_role_and_content(Role::Assistant, "Practice invalid token handling.\u{FFFD}")
+            .with_channel("analysis");
+    assert_eq!(parsed_message, &expected_message);
+}

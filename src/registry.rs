@@ -81,7 +81,7 @@ pub fn load_harmony_encoding(name: HarmonyEncodingName) -> anyhow::Result<Harmon
     }
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
 pub async fn load_harmony_encoding(name: HarmonyEncodingName) -> anyhow::Result<HarmonyEncoding> {
     match name {
         HarmonyEncodingName::HarmonyGptOss => {
@@ -116,7 +116,46 @@ pub async fn load_harmony_encoding(name: HarmonyEncodingName) -> anyhow::Result<
                     FormattingToken::EndMessageDoneSampling,
                     FormattingToken::EndMessageAssistantToTool,
                 ]),
-                conversation_has_function_tools: Arc::new(AtomicBool::new(false)),
+            })
+        }
+    }
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "wasi"))]
+pub fn load_harmony_encoding(name: HarmonyEncodingName) -> anyhow::Result<HarmonyEncoding> {
+    match name {
+        HarmonyEncodingName::HarmonyGptOss => {
+            let n_ctx = 1_048_576; // 2^20
+            let max_action_length = 524_288; // 2^19
+            let encoding_ext = tiktoken_ext::Encoding::O200kHarmony;
+            Ok(HarmonyEncoding {
+                name: name.to_string(),
+                n_ctx,
+                tokenizer: Arc::new(encoding_ext.load()?),
+                tokenizer_name: encoding_ext.name().to_owned(),
+                max_message_tokens: n_ctx - max_action_length,
+                max_action_length,
+                format_token_mapping: make_mapping([
+                    (FormattingToken::Start, "<|start|>"),
+                    (FormattingToken::Message, "<|message|>"),
+                    (FormattingToken::EndMessage, "<|end|>"),
+                    (FormattingToken::EndMessageDoneSampling, "<|return|>"),
+                    (FormattingToken::Refusal, "<|refusal|>"),
+                    (FormattingToken::ConstrainedFormat, "<|constrain|>"),
+                    (FormattingToken::Channel, "<|channel|>"),
+                    (FormattingToken::EndMessageAssistantToTool, "<|call|>"),
+                    (FormattingToken::BeginUntrusted, "<|untrusted|>"),
+                    (FormattingToken::EndUntrusted, "<|end_untrusted|>"),
+                ]),
+                stop_formatting_tokens: HashSet::from([
+                    FormattingToken::EndMessageDoneSampling,
+                    FormattingToken::EndMessageAssistantToTool,
+                    FormattingToken::EndMessage,
+                ]),
+                stop_formatting_tokens_for_assistant_actions: HashSet::from([
+                    FormattingToken::EndMessageDoneSampling,
+                    FormattingToken::EndMessageAssistantToTool,
+                ]),
             })
         }
     }

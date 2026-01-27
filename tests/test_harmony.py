@@ -1244,3 +1244,77 @@ def test_streamable_parser_tricky_utf8_decoding():
 
     # Ensure if we're accumulating content deltas we still get the full utf-8 text
     assert "".join(content_deltas) == tricky_utf8_text
+
+
+def test_multi_turn_auto_drop_analysis():
+    """
+    In multi-turn conversations with auto_drop_analysis=True,
+    all analysis messages before the last final message should be dropped.
+
+    This test ensures that we use last_final_idx instead of first_final_idx
+    when determining which analysis messages to drop.
+    """
+    encoding = load_harmony_encoding(HarmonyEncodingName.HARMONY_GPT_OSS)
+
+    expected_output = (
+        (ROOT_DIR / "test-data" / "test_multi_turn_auto_drop_analysis.txt")
+        .read_text(encoding="utf-8")
+        .rstrip()
+    )
+
+    convo = Conversation.from_messages(
+        [
+            Message.from_role_and_content(
+                Role.DEVELOPER,
+                DeveloperContent.new().with_instructions(
+                    "You are a helpful assistant that analyzes code and provides detailed feedback."
+                ),
+            ),
+            Message.from_role_and_content(
+                Role.USER,
+                "Can you help me optimize this Python function?\n\n"
+                "def fibonacci(n):\n"
+                "    if n <= 1:\n"
+                "        return n\n"
+                "    return fibonacci(n-1) + fibonacci(n-2)",
+            ),
+            # Turn 1: analysis + final
+            Message.from_role_and_content(
+                Role.ASSISTANT,
+                "The user provided a recursive Fibonacci implementation. O(2^n) complexity.",
+            ).with_channel("analysis"),
+            Message.from_role_and_content(
+                Role.ASSISTANT,
+                "This recursive Fibonacci has exponential time complexity. "
+                "Would you like me to show optimized versions?",
+            ).with_channel("final"),
+            Message.from_role_and_content(Role.USER, "Yes, and benchmark them"),
+            # Turn 2: analysis + final
+            Message.from_role_and_content(
+                Role.ASSISTANT,
+                "User wants benchmarks. I should run some Python code to compare performance.",
+            ).with_channel("analysis"),
+            Message.from_role_and_content(
+                Role.ASSISTANT, "I'll benchmark both versions for you."
+            ).with_channel("final"),
+            Message.from_role_and_content(Role.USER, "Run the benchmark for n=30"),
+            # Turn 3: analysis + tool call (no final after)
+            Message.from_role_and_content(
+                Role.ASSISTANT,
+                "I need to execute Python code to run the benchmark for n=30.",
+            ).with_channel("analysis"),
+            Message.from_role_and_content(
+                Role.ASSISTANT,
+                '{"code": "import timeit\\n\\ndef fib_recursive(n):\\n    if n <= 1: return n\\n    return fib_recursive(n-1) + fib_recursive(n-2)\\n\\ndef fib_iter(n):\\n    if n <= 1: return n\\n    a, b = 0, 1\\n    for _ in range(2, n+1): a, b = b, a+b\\n    return b\\n\\nprint(timeit.timeit(lambda: fib_recursive(30), number=1))\\nprint(timeit.timeit(lambda: fib_iter(30), number=1000))"}',
+            )
+            .with_channel("commentary")
+            .with_recipient("functions.python")
+            .with_content_type("json"),
+        ]
+    )
+
+    tokens = encoding.render_conversation_for_completion(
+        convo, Role.ASSISTANT, RenderConversationConfig(auto_drop_analysis=True)
+    )
+
+    assert encoding.decode_utf8(tokens) == expected_output

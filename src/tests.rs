@@ -652,6 +652,10 @@ fn assert_tokens_eq(tokenizer: &CoreBPE, expected: &[Rank], actual: &[Rank]) {
     }
 }
 
+fn parsed_header_to_json(header: &crate::encoding::ParsedHeader) -> serde_json::Value {
+    serde_json::to_value(header).expect("ParsedHeader should be JSON-serializable")
+}
+
 #[test]
 fn test_streamable_parser_tool_call_with_constrain_adjacent() {
     let encoding = load_harmony_encoding(HarmonyEncodingName::HarmonyGptOss).unwrap();
@@ -672,6 +676,131 @@ fn test_streamable_parser_tool_call_with_constrain_adjacent() {
         .with_content_type("<|constrain|>json"),
         parser.messages()[0]
     );
+}
+
+#[test]
+fn test_parse_header_from_string_extracts_channel_recipient_content_type() {
+    let encoding = load_harmony_encoding(HarmonyEncodingName::HarmonyGptOss).unwrap();
+    let parser = StreamableParser::new(encoding, None).unwrap();
+    let header_string =
+        "assistant<|channel|>commentary to=functions.get_weather <|constrain|>json".to_string();
+
+    let (header, remaining) = parser
+        .parse_header_from_string(header_string, None, true)
+        .unwrap();
+
+    assert_eq!(
+        parsed_header_to_json(&header),
+        json!({
+            "author": { "role": "assistant" },
+            "recipient": "functions.get_weather",
+            "channel": "commentary",
+            "content_type": "<|constrain|>json",
+        })
+    );
+    assert_eq!(remaining, None);
+}
+
+#[test]
+fn test_parse_header_from_string_extracts_channel_recipient_content_type_extra_channel() {
+    let encoding = load_harmony_encoding(HarmonyEncodingName::HarmonyGptOss).unwrap();
+    let parser = StreamableParser::new(encoding, None).unwrap();
+    let header_string =
+        "assistant<|channel|>commentary to=functions.get_weather<|channel|>commentary <|constrain|>json".to_string();
+
+    let (header, remaining) = parser
+        .parse_header_from_string(header_string, None, true)
+        .unwrap();
+
+    assert_eq!(
+        parsed_header_to_json(&header),
+        json!({
+            "author": { "role": "assistant" },
+            "recipient": "functions.get_weather",
+            "channel": "commentary",
+            "content_type": "<|constrain|>json",
+        })
+    );
+    assert_eq!(remaining, None);
+}
+
+#[test]
+fn test_parse_header_from_string_extracts_channel_recipient_content_type_extra_channels() {
+    let encoding = load_harmony_encoding(HarmonyEncodingName::HarmonyGptOss).unwrap();
+    let parser = StreamableParser::new(encoding, None).unwrap();
+    let header_string =
+        "assistant<|channel|>commentary to=functions.get_weather<|channel|>analysis <|channel|>commentary <|channel|>final".to_string();
+
+    let (header, remaining) = parser
+        .parse_header_from_string(header_string, None, true)
+        .unwrap();
+
+    assert_eq!(
+        parsed_header_to_json(&header),
+        json!({
+            "author": { "role": "assistant" },
+            "recipient": "functions.get_weather",
+            "channel": "commentary",
+            "content_type": null,
+        })
+    );
+    assert_eq!(remaining, None);
+}
+
+#[test]
+fn test_parse_header_from_string_channel_marker_without_value_errors() {
+    let encoding = load_harmony_encoding(HarmonyEncodingName::HarmonyGptOss).unwrap();
+    let parser = StreamableParser::new(encoding, None).unwrap();
+    let header_string = "assistant<|channel|> to=foo".to_string();
+
+    let result = parser.parse_header_from_string(header_string, None, true);
+
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_parse_header_from_string_extra_channel_no_recipient() {
+    let encoding = load_harmony_encoding(HarmonyEncodingName::HarmonyGptOss).unwrap();
+    let parser = StreamableParser::new(encoding, None).unwrap();
+    let header_string = "assistant<|channel|>commentary<|channel|>analysis".to_string();
+
+    let (header, remaining) = parser
+        .parse_header_from_string(header_string, None, true)
+        .unwrap();
+
+    assert_eq!(
+        parsed_header_to_json(&header),
+        json!({
+            "author": { "role": "assistant" },
+            "recipient": null,
+            "channel": "commentary",
+            "content_type": null,
+        })
+    );
+    assert_eq!(remaining, None);
+}
+
+#[test]
+fn test_parse_header_from_string_extra_channel_adjacent_to_constrain() {
+    let encoding = load_harmony_encoding(HarmonyEncodingName::HarmonyGptOss).unwrap();
+    let parser = StreamableParser::new(encoding, None).unwrap();
+    let header_string =
+        "assistant<|channel|>commentary to=foo<|channel|>analysis<|constrain|>json".to_string();
+
+    let (header, remaining) = parser
+        .parse_header_from_string(header_string, None, true)
+        .unwrap();
+
+    assert_eq!(
+        parsed_header_to_json(&header),
+        json!({
+            "author": { "role": "assistant" },
+            "recipient": "foo",
+            "channel": "commentary",
+            "content_type": "<|constrain|>json",
+        })
+    );
+    assert_eq!(remaining, None);
 }
 
 #[test]

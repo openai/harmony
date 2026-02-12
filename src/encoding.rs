@@ -9,6 +9,8 @@ use std::{
     vec,
 };
 
+const REPLACEMENT: &str = "\u{FFFD}";
+
 // Parsed representation of a message header.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ParsedHeader {
@@ -394,6 +396,23 @@ impl HarmonyEncoding {
         Ok(())
     }
 
+    pub fn parse_messages_from_completion_tokens_with_options<I>(
+        &self,
+        tokens: I,
+        role: Option<Role>,
+        options: ParseOptions,
+    ) -> anyhow::Result<Vec<Message>>
+    where
+        I: IntoIterator<Item = Rank>,
+    {
+        let mut parser = StreamableParser::new_with_options(self.clone(), role, options)?;
+        for token in tokens {
+            parser.process(token)?;
+        }
+        parser.process_eos()?;
+        Ok(parser.into_messages())
+    }
+
     pub fn parse_messages_from_completion_tokens<I>(
         &self,
         tokens: I,
@@ -402,12 +421,11 @@ impl HarmonyEncoding {
     where
         I: IntoIterator<Item = Rank>,
     {
-        let mut parser = StreamableParser::new(self.clone(), role)?;
-        for token in tokens {
-            parser.process(token)?;
-        }
-        parser.process_eos()?;
-        Ok(parser.into_messages())
+        self.parse_messages_from_completion_tokens_with_options(
+            tokens,
+            role,
+            ParseOptions::default(),
+        )
     }
 
     /// Helper to convert a JSON schema (OpenAPI style) to a TypeScript type definition.
@@ -860,7 +878,23 @@ impl Render<Message> for HarmonyEncoding {
 
         // finally content type
         if let Some(content_type) = &message.content_type {
-            self.render_text_into(format!(" {content_type}"), into)?;
+            // <|constrain|> is a unique case which needs to be tokenized as a special token
+            if let Some(constrain_marker) =
+                self.mapped_format_token(FormattingToken::ConstrainedFormat)
+            {
+                if let Some(rest) = content_type.strip_prefix(constrain_marker) {
+                    // Render the space, then the constrain marker as a special token, then the rest as text (if any)
+                    self.render_text_into(" ", into)?;
+                    self.render_formatting_token_into(FormattingToken::ConstrainedFormat, into)?;
+                    if !rest.is_empty() {
+                        self.render_text_into(rest, into)?;
+                    }
+                } else {
+                    self.render_text_into(format!(" {content_type}"), into)?;
+                }
+            } else {
+                self.render_text_into(format!(" {content_type}"), into)?;
+            }
         }
 
         self.render_formatting_token_into(FormattingToken::Message, into)?;
@@ -1028,6 +1062,17 @@ impl Render<crate::chat::DeveloperContent> for HarmonyEncoding {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct ParseOptions {
+    pub strict: bool,
+}
+
+impl Default for ParseOptions {
+    fn default() -> Self {
+        Self { strict: true }
+    }
+}
+
 /// Incremental parser that can consume tokens one by one.
 ///
 /// It keeps track of all tokens seen so far, exposes all fully parsed messages
@@ -1041,6 +1086,8 @@ pub struct StreamableParser {
     stop_tokens: HashSet<Rank>,
     last_content_delta: Option<String>,
     undecoded_tokens: Vec<Rank>,
+    undecoded_bytes: Vec<u8>,
+    options: ParseOptions,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -1058,6 +1105,15 @@ pub enum StreamState {
 impl StreamableParser {
     /// Create a new streaming parser starting with the given role.
     pub fn new(encoding: HarmonyEncoding, role: Option<Role>) -> anyhow::Result<Self> {
+        Self::new_with_options(encoding, role, ParseOptions::default())
+    }
+
+    /// Create a new streaming parser with explicit options.
+    pub fn new_with_options(
+        encoding: HarmonyEncoding,
+        role: Option<Role>,
+        options: ParseOptions,
+    ) -> anyhow::Result<Self> {
         let stop_tokens = encoding.stop_tokens()?;
         let (state, next_role) = match role {
             Some(role) => (
@@ -1077,6 +1133,8 @@ impl StreamableParser {
             stop_tokens,
             last_content_delta: None,
             undecoded_tokens: Vec::new(),
+            undecoded_bytes: Vec::new(),
+            options,
         })
     }
 
@@ -1132,6 +1190,34 @@ impl StreamableParser {
                             content_tokens: Vec::new(),
                         };
                     }
+                    Some(token) if !self.options.strict && self.stop_tokens.contains(&token) => {
+                        // Encountered a stop token while in Header state. This means we have
+                        // accumulated header tokens but never saw a <|message|> token, so the
+                        // message is malformed. If we have a role, parse header metadata and
+                        // treat remaining tokens as content.
+                        if let Some(role) = next_role_clone {
+                            if !header_tokens.is_empty() {
+                                let decoded =
+                                    self.encoding.tokenizer().decode_utf8(header_tokens)?;
+                                let (header, remaining_content) =
+                                    self.parse_header_from_string(decoded, Some(role), false)?;
+
+                                // Use remaining content if present, otherwise empty string
+                                let text = remaining_content.unwrap_or_default();
+                                let message = Message {
+                                    author: header.author.clone(),
+                                    recipient: header.recipient.clone(),
+                                    channel: header.channel.clone(),
+                                    content_type: header.content_type.clone(),
+                                    content: vec![Content::Text(TextContent { text })],
+                                };
+                                self.messages.push(message);
+                            }
+                        }
+                        // Transition to ExpectStart to wait for the next message
+                        self.state = StreamState::ExpectStart;
+                        self.next_role = None;
+                    }
                     Some(token) => {
                         header_tokens.push(token);
                     }
@@ -1157,14 +1243,59 @@ impl StreamableParser {
                         match self
                             .encoding
                             .tokenizer()
-                            .decode_utf8(&self.undecoded_tokens)
+                            .decode_bytes(&self.undecoded_tokens)
                         {
-                            Ok(decoded) => {
-                                content_tokens.extend(self.undecoded_tokens.iter().copied());
-                                self.last_content_delta = Some(decoded);
+                            Ok(decoded_bytes) => {
+                                self.undecoded_bytes.extend(decoded_bytes.iter().copied());
+                                match String::from_utf8(self.undecoded_bytes.clone()) {
+                                    Ok(decoded_str) => {
+                                        self.encoding
+                                            .render_text_into(&decoded_str, content_tokens)?;
+                                        self.last_content_delta = Some(decoded_str);
+                                        self.undecoded_bytes.clear();
+                                    }
+                                    Err(e) => {
+                                        let utf8_error = e.utf8_error();
+                                        let decoded_bytes = e.into_bytes();
+
+                                        let valid_len = utf8_error.valid_up_to();
+
+                                        let mut content_delta = String::new();
+                                        if valid_len > 0 {
+                                            let valid_str = String::from_utf8(
+                                                decoded_bytes[..valid_len].to_vec(),
+                                            )
+                                            .unwrap();
+                                            self.encoding
+                                                .render_text_into(&valid_str, content_tokens)?;
+                                            content_delta.push_str(&valid_str);
+                                            self.undecoded_bytes.drain(..valid_len);
+                                        }
+
+                                        match utf8_error.error_len() {
+                                            Some(error_len) => {
+                                                self.encoding.render_text_into(
+                                                    REPLACEMENT,
+                                                    content_tokens,
+                                                )?;
+                                                content_delta.push_str(REPLACEMENT);
+                                                self.undecoded_bytes.drain(..error_len);
+                                            }
+                                            None => {
+                                                // waiting on next byte in our utf-8 sequence
+                                                self.last_content_delta = None;
+                                            }
+                                        }
+
+                                        if !content_delta.is_empty() {
+                                            self.last_content_delta = Some(content_delta);
+                                        }
+                                    }
+                                }
                                 self.undecoded_tokens.clear();
                             }
                             Err(_) => {
+                                // Bytes not yet valid utf-8, wait on the next token
                                 self.last_content_delta = None;
                             }
                         }
@@ -1176,7 +1307,20 @@ impl StreamableParser {
                     true
                 };
                 if is_eos {
-                    let text = self.encoding.tokenizer().decode_utf8(content_tokens)?;
+                    // Our rendered content tokens are valid utf-8, so we can decode them directly
+                    let content_text = self.encoding.tokenizer().decode_utf8(content_tokens)?;
+                    // Decode any remaining undecoded tokens, replacing any invalid tokens with the replacement character
+                    let tokens_text = match self
+                        .encoding
+                        .tokenizer()
+                        .decode_utf8(self.undecoded_tokens.clone())
+                    {
+                        Ok(text) => text,
+                        Err(_) => REPLACEMENT.to_string(),
+                    };
+                    // Decode any remaining undecoded bytes, replacing any invalid bytes with the replacement character
+                    let bytes_text = String::from_utf8_lossy(&self.undecoded_bytes);
+                    let text = content_text + &tokens_text + &bytes_text;
                     let message = Message {
                         author: header.author.clone(),
                         recipient: header.recipient.clone(),
@@ -1188,6 +1332,7 @@ impl StreamableParser {
                     self.state = StreamState::ExpectStart;
                     self.last_content_delta = None;
                     self.undecoded_tokens.clear();
+                    self.undecoded_bytes.clear();
                 }
             }
         }
@@ -1203,17 +1348,18 @@ impl StreamableParser {
         Ok(self)
     }
 
-    fn parse_header_from_tokens(
+    /// Helper to parse header metadata from a decoded string.
+    /// Returns the parsed header and any remaining content after extracting header parts.
+    ///
+    /// If `parse_recipient_and_type` is true, tries to parse recipient and content_type from
+    /// whitespace-separated tokens (normal header parsing). If false, treats all remaining
+    /// text after extracting channel as content (for malformed messages).
+    fn parse_header_from_string(
         &self,
-        header_tokens: &[Rank],
+        mut header_string: String,
         role: Option<Role>,
-    ) -> anyhow::Result<ParsedHeader> {
-        let mut header_string = self
-            .encoding
-            .tokenizer()
-            .decode_utf8(header_tokens)
-            .context("could not decode header")?;
-
+        parse_recipient_and_type: bool,
+    ) -> anyhow::Result<(ParsedHeader, Option<String>)> {
         let mut channel: Option<String> = None;
         if let Some(channel_marker) = self.encoding.mapped_format_token(FormattingToken::Channel) {
             if let Some(idx) = header_string.find(channel_marker) {
@@ -1289,10 +1435,9 @@ impl StreamableParser {
 
         let mut recipient: Option<String> = None;
         let mut content_type: Option<String> = None;
+        let remaining_content: Option<String>;
 
-        if !parts.is_empty() {
-            // Determine whether the last token is a content-type or part of the
-            // recipient specification.
+        if parse_recipient_and_type && !parts.is_empty() {
             let num_parts = parts.len();
             // SAFETY: we know that there is at least one part remaining, because of is_empty check above
             let last_part = parts.pop().unwrap();
@@ -1317,12 +1462,21 @@ impl StreamableParser {
                     };
                 }
             }
+
+            // Any remaining parts are content (not header metadata)
+            remaining_content = if !parts.is_empty() {
+                Some(parts.join(" "))
+            } else {
+                None
+            };
+        } else {
+            // Treat all remaining parts as content when not parsing recipient and content type
+            remaining_content = if !parts.is_empty() {
+                Some(parts.join(" "))
+            } else {
+                None
+            };
         }
-        anyhow::ensure!(
-            parts.is_empty(),
-            "unexpected tokens remaining in message header: {:?}",
-            parts
-        );
 
         let author = if role == Role::Tool {
             let name = role_str_opt;
@@ -1330,12 +1484,39 @@ impl StreamableParser {
         } else {
             Author { role, name: None }
         };
-        Ok(ParsedHeader {
-            author,
-            recipient,
-            channel,
-            content_type,
-        })
+        Ok((
+            ParsedHeader {
+                author,
+                recipient,
+                channel,
+                content_type,
+            },
+            remaining_content,
+        ))
+    }
+
+    fn parse_header_from_tokens(
+        &self,
+        header_tokens: &[Rank],
+        role: Option<Role>,
+    ) -> anyhow::Result<ParsedHeader> {
+        let header_string = self
+            .encoding
+            .tokenizer()
+            .decode_utf8(header_tokens)
+            .context("could not decode header")?;
+
+        let (header, remaining_content) =
+            self.parse_header_from_string(header_string, role, true)?;
+
+        if remaining_content.is_some() {
+            anyhow::bail!(
+                "unexpected tokens remaining in message header: {:?}",
+                remaining_content
+            );
+        }
+
+        Ok(header)
     }
 
     /// Return the textual content of the current message so far.

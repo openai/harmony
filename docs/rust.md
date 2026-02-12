@@ -88,12 +88,15 @@ Important methods:
 - `render_conversation_for_training(conversation, config)` – render a conversation for training data.
 - `render_conversation(conversation, config)` – render a conversation without appending a new role.
 - `render(message)` – render a single message into tokens.
-- `parse_messages_from_completion_tokens(tokens, role)` – parse a list of tokens back into messages.
+- `parse_messages_from_completion_tokens(tokens, role)` – parse a list of tokens back into messages using strict validation.
+- `parse_messages_from_completion_tokens_with_options(tokens, role, options)` – parse tokens with custom `ParseOptions` (e.g. to disable strict validation).
 - `stop_tokens()` and `stop_tokens_for_assistant_actions()` – sets of stop tokens for sampling.
+
+`ParseOptions` currently exposes a single field, `strict`, which defaults to `true`. Set it to `false` when you need to recover from malformed model output in downstream systems.
 
 ### `StreamableParser`
 
-Incremental parser that consumes tokens one by one. Create with `StreamableParser::new(encoding, role)` and feed tokens via `process`. Access information via getters like `current_content`, `current_role`, `messages`, `tokens` and `state_json`.
+Incremental parser that consumes tokens one by one. Create with `StreamableParser::new(encoding, role)` and feed tokens via `process`. Access information via getters like `current_content`, `current_role`, `messages`, `tokens` and `state_json`. Use `StreamableParser::new_with_options(encoding, role, options)` when you need to override defaults such as `ParseOptions { strict: false }`.
 
 ## registry module
 

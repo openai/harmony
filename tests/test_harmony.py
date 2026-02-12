@@ -240,6 +240,36 @@ def test_simple_tool_call(encoding_name):
         HarmonyEncodingName.HARMONY_GPT_OSS,
     ],
 )
+def test_tool_call_with_constrain_tokenized_correctly(encoding_name):
+    """
+    Despite passing <|constrain|> as a string in "content_type" it has to be kept as a special token.
+    """
+    encoding = load_harmony_encoding(encoding_name)
+    text = (
+        "<|start|>assistant to=functions.get_weather<|channel|>commentary"
+        ' <|constrain|>json<|message|>{"location": "Tokyo"}<|call|>'
+    )
+    tokens = encoding.encode(text, allowed_special="all")
+    parsed = encoding.parse_messages_from_completion_tokens(tokens, role=None)
+    expected = [
+        Message.from_role_and_content(Role.ASSISTANT, '{"location": "Tokyo"}')
+        .with_channel("commentary")
+        .with_recipient("functions.get_weather")
+        .with_content_type("<|constrain|>json"),
+    ]
+    assert parsed == expected
+
+    rendered = encoding.render_conversation(Conversation.from_messages(expected))
+    assert text == encoding.decode_utf8(tokens)
+    assert rendered == tokens
+
+
+@pytest.mark.parametrize(
+    "encoding_name",
+    [
+        HarmonyEncodingName.HARMONY_GPT_OSS,
+    ],
+)
 def test_tool_call_with_constrain_marker_adjacent(encoding_name):
     """
     There are moments where the model might not output a space before constrain resulting in the
@@ -249,7 +279,7 @@ def test_tool_call_with_constrain_marker_adjacent(encoding_name):
     encoding = load_harmony_encoding(encoding_name)
     text = (
         "<|start|>assistant to=functions.get_weather<|channel|>commentary"
-        '<|constrain|>json<|message|>{"location": "Tokyo"}<|end|>'
+        '<|constrain|>json<|message|>{"location": "Tokyo"}<|call|>'
     )
     tokens = encoding.encode(text, allowed_special="all")
     parsed = encoding.parse_messages_from_completion_tokens(tokens, role=None)
@@ -703,6 +733,8 @@ def test_does_not_drop_if_ongoing_analysis():
     )
 
     assert encoding.decode_utf8(tokens) == expected_output
+    # ensure that <|constrain|>json part is tokenized correctly as special tokens
+    assert encoding.encode(expected_output, allowed_special="all") == tokens
 
 
 def test_preserve_cot():
@@ -1014,3 +1046,266 @@ def test_load_harmony_encoding_from_file(tmp_path):
     tokens = encoding.encode(text)
     decoded = encoding.decode(tokens)
     assert decoded.startswith("Hello world")
+
+
+@pytest.mark.parametrize("strict, expect_error", [(False, False), (True, True)])
+def test_streamable_parser_missing_message_token(strict: bool, expect_error: bool):
+    encoding = load_harmony_encoding(HarmonyEncodingName.HARMONY_GPT_OSS)
+
+    text = (
+        "I must refuse<|end|>"
+        "<|start|>assistant<|channel|>analysis<|message|>We must refuse<|end|>"
+        "<|start|>assistant<|channel|>final<|message|>I'm sorry, but I can't help with that.<|return|>"
+    )
+    tokens = encoding.encode(text, allowed_special="all")
+    parser = StreamableParser(encoding, Role.ASSISTANT, strict=strict)
+
+    if expect_error:
+        with pytest.raises(HarmonyError, match="unexpected tokens remaining in message header"):
+            for token in tokens:
+                parser.process(token)
+        return
+
+    for token in tokens:
+        parser.process(token)
+
+    expected = [
+        Message.from_role_and_content(Role.ASSISTANT, "I must refuse"),
+        Message.from_role_and_content(Role.ASSISTANT, "We must refuse").with_channel(
+            "analysis"
+        ),
+        Message.from_role_and_content(
+            Role.ASSISTANT, "I'm sorry, but I can't help with that."
+        ).with_channel("final"),
+    ]
+    assert parser.messages == expected
+
+
+@pytest.mark.parametrize("strict, expect_error", [(False, False), (True, True)])
+def test_streamable_parser_missing_message_token_other_initial_headers(
+    strict: bool, expect_error: bool
+):
+    encoding = load_harmony_encoding(HarmonyEncodingName.HARMONY_GPT_OSS)
+
+    text = (
+        "<|channel|>analysis I must refuse<|end|>"
+        "<|start|>assistant<|channel|>analysis<|message|>We must refuse<|end|>"
+        "<|start|>assistant<|channel|>final<|message|>I'm sorry, but I can't help with that.<|return|>"
+    )
+    tokens = encoding.encode(text, allowed_special="all")
+    parser = StreamableParser(encoding, Role.ASSISTANT, strict=strict)
+
+    if expect_error:
+        with pytest.raises(HarmonyError, match="unexpected tokens remaining in message header"):
+            for token in tokens:
+                parser.process(token)
+        return
+
+    for token in tokens:
+        parser.process(token)
+
+    expected = [
+        Message.from_role_and_content(Role.ASSISTANT, "I must refuse").with_channel(
+            "analysis"
+        ),
+        Message.from_role_and_content(Role.ASSISTANT, "We must refuse").with_channel(
+            "analysis"
+        ),
+        Message.from_role_and_content(
+            Role.ASSISTANT, "I'm sorry, but I can't help with that."
+        ).with_channel("final"),
+    ]
+    assert parser.messages == expected
+
+
+@pytest.mark.parametrize("strict, expect_error", [(False, False), (True, True)])
+def test_streamable_parser_missing_message_token_tool_call(
+    strict: bool, expect_error: bool
+):
+    encoding = load_harmony_encoding(HarmonyEncodingName.HARMONY_GPT_OSS)
+
+    text = (
+        "... Let's use the tool.<|end|>"
+        "<|start|>assistant to=functions.get_weather<|channel|>commentary json"
+        '<|message|>{"location": "Tokyo"}<|call|>'
+    )
+    tokens = encoding.encode(text, allowed_special="all")
+    parser = StreamableParser(encoding, Role.ASSISTANT, strict=strict)
+
+    if expect_error:
+        with pytest.raises(HarmonyError, match="unexpected tokens remaining in message header"):
+            for token in tokens:
+                parser.process(token)
+        return
+
+    for token in tokens:
+        parser.process(token)
+
+    expected = [
+        Message.from_role_and_content(
+            Role.ASSISTANT, "... Let's use the tool."
+        ),
+        Message.from_role_and_content(
+            Role.ASSISTANT, '{"location": "Tokyo"}'
+        )
+        .with_channel("commentary")
+        .with_recipient("functions.get_weather")
+        .with_content_type("json"),
+    ]
+    assert parser.messages == expected
+
+
+def test_streamable_parser_invalid_utf8_decoding():
+    encoding = load_harmony_encoding(HarmonyEncodingName.HARMONY_GPT_OSS)
+
+    # Confirm our token sequence is invalid utf-8
+    # token 9552 corresponds to the bytes [32, 240, 159]
+    # 32 is a space, 240,159 is an invalid utf-8 sequence
+    invalid_token_sequence = [9552, 9552]
+    with pytest.raises(HarmonyError):
+        encoding.decode_utf8(invalid_token_sequence)
+
+    prefix_tokens = encoding.encode("<|start|>assistant<|message|>", allowed_special="all")
+    suffix_tokens = encoding.encode("worked<|end|>", allowed_special="all")
+    tokens = prefix_tokens + invalid_token_sequence + suffix_tokens
+    parser = StreamableParser(encoding, None)
+    for token in tokens:
+        parser.process(token)
+
+    expected = [
+        # Confirm we got the utf-8 replacement characters for the invalid sequences
+        # and the remaining valid utf-8 sequence
+        Message.from_role_and_content(Role.ASSISTANT, " \uFFFD \uFFFDworked"),
+    ]
+    assert parser.messages == expected
+
+
+def test_streamable_parser_invalid_utf8_decoding_split_across_tokens():
+    encoding = load_harmony_encoding(HarmonyEncodingName.HARMONY_GPT_OSS)
+
+    valid_token_sequence = encoding.encode("XY")
+    encoding.decode_utf8(valid_token_sequence)
+
+    # Confirm prepending specific token makes invalid utf-8
+    # 9552 token is the start of a multi-byte utf-8 sequence,
+    # which means prepending it to our previously valid sequence
+    # makes it invalid utf-8
+    invalid_token_sequence = [9552] + valid_token_sequence
+    with pytest.raises(HarmonyError):
+        encoding.decode_utf8(invalid_token_sequence)
+
+    prefix_tokens = encoding.encode("<|start|>assistant<|message|>", allowed_special="all")
+    suffix_tokens = encoding.encode("<|end|>", allowed_special="all")
+    tokens = prefix_tokens + invalid_token_sequence + suffix_tokens
+    parser = StreamableParser(encoding, None)
+    for token in tokens:
+        parser.process(token)
+
+    expected = [
+        # One utf-8 replacement character but otherwise kept our space
+        # (from token 9552) and "X" and "Y" tokens
+        Message.from_role_and_content(Role.ASSISTANT, " \uFFFDXY"),
+    ]
+    assert parser.messages == expected
+
+
+def test_streamable_parser_invalid_utf8_decoding_multi_byte_token():
+    encoding = load_harmony_encoding(HarmonyEncodingName.HARMONY_GPT_OSS)
+
+    # Valid utf-8 sequence - 55=X, 56=Y in tokenizer
+    valid_token_sequence = encoding.encode(" interesting")
+    encoding.decode_utf8(valid_token_sequence)
+
+    # Confirm prepending specific token makes invalid utf-8
+    # 9552 token is the start of a multi-byte utf-8 sequence,
+    # which means prepending it to our previously valid sequence
+    # makes it invalid utf-8
+    invalid_token_sequence = [9552] + valid_token_sequence
+    with pytest.raises(HarmonyError):
+        encoding.decode_utf8(invalid_token_sequence)
+
+    prefix_tokens = encoding.encode("<|start|>assistant<|message|>", allowed_special="all")
+    suffix_tokens = encoding.encode("<|end|>", allowed_special="all")
+    tokens = prefix_tokens + invalid_token_sequence + suffix_tokens
+    parser = StreamableParser(encoding, None)
+    for token in tokens:
+        parser.process(token)
+
+    expected = [
+        # One utf-8 replacement character and the contents of our second token,
+        # which maps to the text " interesting"
+        Message.from_role_and_content(Role.ASSISTANT, " \uFFFD interesting"),
+    ]
+    assert parser.messages == expected
+
+
+def test_streamable_parser_invalid_utf8_decoding_multi_byte_token_no_eos_marker():
+    """Ensure we don't leave partially decoded tokens with no EOS marker."""
+    encoding = load_harmony_encoding(HarmonyEncodingName.HARMONY_GPT_OSS)
+
+    # Valid utf-8 sequence - 55=X, 56=Y in tokenizer
+    valid_token_sequence = encoding.encode(" interesting")
+    encoding.decode_utf8(valid_token_sequence)
+
+    # Confirm prepending specific token makes invalid utf-8
+    # 9552 token is the start of a multi-byte utf-8 sequence,
+    # which means prepending it to our previously valid sequence
+    # makes it invalid utf-8
+    invalid_token_sequence = [9552] + valid_token_sequence
+    with pytest.raises(HarmonyError):
+        encoding.decode_utf8(invalid_token_sequence)
+
+    prefix_tokens = encoding.encode("<|start|>assistant<|message|>", allowed_special="all")
+    suffix_tokens = encoding.encode(" story")
+    tokens = prefix_tokens + invalid_token_sequence + suffix_tokens
+    parser = StreamableParser(encoding, None)
+
+    content_deltas = []
+    for token in tokens:
+        parser.process(token)
+        if parser.last_content_delta is not None:
+            content_deltas.append(parser.last_content_delta)
+
+    # No EOS, so no full message, but make sure we have the current content
+    assert parser.current_content == " \uFFFD interesting story"
+
+    # Ensure all the deltas combine to form our expected content
+    assert "".join(content_deltas) == " \uFFFD interesting story"
+
+    # Confirm we can keep accumulating content delta and content
+    one_more_token = encoding.encode("Y")[0]
+    parser.process(one_more_token)
+    assert parser.last_content_delta == "Y"
+    assert parser.current_content == " \uFFFD interesting storyY"
+
+
+def test_streamable_parser_tricky_utf8_decoding():
+    """Try text with various types of utf-8 sequences that are more likely to fail."""
+    encoding = load_harmony_encoding(HarmonyEncodingName.HARMONY_GPT_OSS)
+
+    tricky_utf8_text = (
+        "Hello Müller, Γειά σου, Привет, שלום, مرحبا, नमस्ते, こんにちは, 안녕하세요,"
+        " 你好. Normalized (naïve) vs. decomposed (naïve) characters. "
+        "Some emojis: 😊👋🏾👨‍👩‍👧‍👦🇺🇸."
+    )
+    valid_token_sequence = encoding.encode(tricky_utf8_text)
+
+    prefix_tokens = encoding.encode("<|start|>assistant<|message|>", allowed_special="all")
+    suffix_tokens = encoding.encode("<|end|>", allowed_special="all")
+    tokens = prefix_tokens + valid_token_sequence + suffix_tokens
+    parser = StreamableParser(encoding, None)
+
+    content_deltas = []
+    for token in tokens:
+        parser.process(token)
+        if parser.last_content_delta is not None:
+            content_deltas.append(parser.last_content_delta)
+
+    expected = [
+        Message.from_role_and_content(Role.ASSISTANT, tricky_utf8_text),
+    ]
+    # Ensure we got the entirety of our tricky utf-8 text as message content
+    assert parser.messages == expected
+
+    # Ensure if we're accumulating content deltas we still get the full utf-8 text
+    assert "".join(content_deltas) == tricky_utf8_text

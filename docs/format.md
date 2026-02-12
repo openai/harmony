@@ -52,19 +52,14 @@ encoding = load_harmony_encoding(HarmonyEncodingName.HARMONY_GPT_OSS)
 
 system_message = (
     SystemContent.new()
-        .with_model_identity(
-            "You are ChatGPT, a large language model trained by OpenAI."
-        )
         .with_reasoning_effort(ReasoningEffort.HIGH)
         .with_conversation_start_date("2025-06-28")
-        .with_knowledge_cutoff("2024-06")
-        .with_required_channels(["analysis", "commentary", "final"])
 )
 
 developer_message = (
     DeveloperContent.new()
         .with_instructions("Always respond in riddles")
-        .with_tools(
+        .with_function_tools(
             [
                 ToolDescription.new(
                     "get_current_weather",
@@ -101,19 +96,25 @@ convo = Conversation.from_messages(
         Message.from_role_and_content(Role.ASSISTANT, '{"location": "Tokyo"}')
         .with_channel("commentary")
         .with_recipient("functions.get_weather")
-        .with_content_type("json"),
+        .with_content_type("<|constrain|> json"),
         Message.from_author_and_content(
             Author.new(Role.TOOL, "functions.lookup_weather"),
             '{ "temperature": 20, "sunny": true }',
-        ),
+        )
+        .with_channel("commentary")
+        .with_recipient("assistant"),
     ]
 )
 
 tokens = encoding.render_conversation_for_completion(convo, Role.ASSISTANT)
 
 # After receiving a token response
-# Do not pass in the stop token
-parsed_response = encoding.parse_messages_from_completion_tokens(new_tokens, Role.ASSISTANT)
+# Do not pass in the stop token. Set strict=False to tolerate malformed headers.
+parsed_response = encoding.parse_messages_from_completion_tokens(
+    new_tokens,
+    Role.ASSISTANT,
+    strict=True,
+)
 ```
 
 Additionally the openai_harmony library also includes a StreamableParser for parsing and decoding as the model is generating new tokens. This can be helpful for example to stream output and handle unicode characters during decoding.
@@ -229,6 +230,8 @@ Once its done generating it will stop with either a `<|return|>` token indicatin
 
 The `final` channel will contain the answer to your user’s request. Check out the [reasoning section](#reasoning) for more details on the chain-of-thought.
 
+**Implementation note:** `<|return|>` is a decode-time stop token only. When you add the assistant’s generated reply to conversation history for the next turn, replace the trailing `<|return|>` with `<|end|>` so that stored messages are fully formed as `<|start|>{header}<|message|>{content}<|end|>`. Prior messages in prompts should therefore end with `<|end|>`. For supervised targets/training examples, ending with `<|return|>` is appropriate; for persisted history, normalize to `<|end|>`.
+
 ### System message format
 
 The system message is used to provide general information to the system. This is different to what might be considered the “system prompt” in other prompt formats. For that, check out the [developer message format](#developer-message-format).
@@ -272,7 +275,7 @@ If you are not using function tool calling your developer message would just loo
 
 Where `{instructions}` is replaced with your “system prompt”.
 
-For defining function calling tools, [check out the dedicated section](#function-calling).  
+For defining function calling tools, [check out the dedicated section](#function-calling).
 For defining an output format to be used in structured outputs, [check out this section of the guide](#structured-output).
 
 ### Reasoning
@@ -304,8 +307,8 @@ And the actual answer is:
 2 + 2 = 4
 ```
 
-**Important:**  
-The model has not been trained to the same safety standards in the chain-of-thought as it has for final output. You should We recommend not to show the chain-of-thought to your users as they might contain harmful content. [Learn more in the model card](https://openai.com/index/gpt-oss-model-card/).
+**Important:**
+The model has not been trained to the same safety standards in the chain-of-thought as it has for final output. We recommend not to show the chain-of-thought to your users as they might contain harmful content. [Learn more in the model card](https://openai.com/index/gpt-oss-model-card/).
 
 #### Handling reasoning output in subsequent sampling
 
@@ -327,7 +330,7 @@ Then the input for the next sampling should be
 
 ```
 <|start|>user<|message|>What is 2 + 2?<|end|>
-<|start|>assistant<|channel|>final<|message|>2 + 2 = 4.<|return|>
+<|start|>assistant<|channel|>final<|message|>2 + 2 = 4.<|end|>
 <|start|>user<|message|>What about 9 / 2?<|end|>
 <|start|>assistant
 ```

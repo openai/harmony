@@ -20,7 +20,9 @@ Current date: 2025-06-28
 Reasoning: high
 
 # Valid channels: analysis, commentary, final. Channel must be included for every message.
-Calls to these tools must go to the commentary channel: 'functions'.<|end|><|start|>developer<|message|># Instructions
+Calls to these tools must go to the commentary channel: 'functions'.<|end|>
+
+<|start|>developer<|message|># Instructions
 
 Always respond in riddles
 
@@ -149,7 +151,7 @@ through thin [`pyo3`](https://pyo3.rs/) bindings.
 │   ├── tests.rs          # Canonical Rust test-suite
 │   └── py_module.rs      # PyO3 bindings ⇒ compiled as openai_harmony.*.so
 │
-├── harmony/              # Pure-Python wrapper around the binding
+├── python/openai_harmony/ # Pure-Python wrapper around the binding
 │   └── __init__.py       # Dataclasses + helper API mirroring chat.rs
 │
 ├── tests/                # Python test-suite (1-to-1 port of tests.rs)

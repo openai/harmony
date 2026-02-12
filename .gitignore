@@ -70,3 +70,6 @@ docs/_build/
 
 # Pyenv
 .python-version
+
+# Avoid ignoring shadcn utils
+!demo/harmony-demo/src/lib

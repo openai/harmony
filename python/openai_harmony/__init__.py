@@ -29,7 +29,7 @@ from typing import (
 )
 
 import re
-from pydantic import BaseModel, DictConfig, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 # Re-export the low-level Rust bindings under a private name so that we can
 # keep the *public* namespace clean and purely Pythonic.

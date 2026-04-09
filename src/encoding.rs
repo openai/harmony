@@ -1329,7 +1329,7 @@ impl StreamableParser {
     /// If `parse_recipient_and_type` is true, tries to parse recipient and content_type from
     /// whitespace-separated tokens (normal header parsing). If false, treats all remaining
     /// text after extracting channel as content (for malformed messages).
-    fn parse_header_from_string(
+    pub(crate) fn parse_header_from_string(
         &self,
         mut header_string: String,
         role: Option<Role>,
@@ -1352,6 +1352,19 @@ impl StreamableParser {
                 new_header.push_str(&header_string[..idx]);
                 new_header.push_str(&after_marker[channel_end..]);
                 header_string = new_header;
+
+                // Trim extraneous channel markers, which are sometimes emittted
+                // with smaller models in multi-turn conversations
+                while let Some(extra_idx) = header_string.find(channel_marker) {
+                    let after = &header_string[extra_idx + channel_marker.len()..];
+                    let end = after
+                        .find(|c: char| c.is_whitespace() || c == '<')
+                        .unwrap_or(after.len());
+                    let mut cleaned = String::new();
+                    cleaned.push_str(&header_string[..extra_idx]);
+                    cleaned.push_str(&after[end..]);
+                    header_string = cleaned;
+                }
             }
         }
 

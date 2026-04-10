@@ -192,28 +192,20 @@ impl HarmonyEncoding {
         let render_options = RenderOptions {
             conversation_has_function_tools: has_function_tools,
         };
-        let last_assistant_is_final = messages
-            .iter()
-            .rev()
-            .find_map(|msg| {
-                (msg.author.role == Role::Assistant)
-                    .then(|| msg.channel.as_deref() == Some("final"))
-            })
-            .unwrap_or(false);
 
         let should_drop_analysis =
-            config.is_some_and(|c| c.auto_drop_analysis && last_assistant_is_final);
+            config.is_some_and(|c| c.auto_drop_analysis);
 
-        let first_final_idx = messages
+        let last_final_idx = messages
             .iter()
-            .position(|msg| msg.channel.as_deref() == Some("final"));
+            .rposition(|msg| msg.channel.as_deref() == Some("final"));
 
         let result = messages
             .iter()
             .enumerate()
             .filter(|(idx, msg)| {
                 !(should_drop_analysis
-                    && first_final_idx.is_some_and(|first| *idx < first)
+                    && last_final_idx.is_some_and(|last| *idx < last)
                     && msg.channel.as_deref() == Some("analysis"))
             })
             .try_for_each(|(_, msg)| self.render_into(msg, into, Some(&render_options)));

@@ -886,3 +886,74 @@ fn test_parse_completion_with_invalid_content_token_errors_on_eos() {
             .with_channel("analysis");
     assert_eq!(parsed_message, &expected_message);
 }
+
+#[test]
+fn test_multi_turn_auto_drop_analysis() {
+    let encoding = load_harmony_encoding(HarmonyEncodingName::HarmonyGptOss).unwrap();
+    let expected_output = load_test_data("../test-data/test_multi_turn_auto_drop_analysis.txt");
+
+    let convo = Conversation::from_messages([
+        Message::from_role_and_content(
+            Role::Developer,
+            DeveloperContent::new().with_instructions(
+                "You are a helpful assistant that analyzes code and provides detailed feedback.",
+            ),
+        ),
+        Message::from_role_and_content(
+            Role::User,
+            "Can you help me optimize this Python function?\n\n\
+             def fibonacci(n):\n\
+                 if n <= 1:\n\
+                     return n\n\
+                 return fibonacci(n-1) + fibonacci(n-2)",
+        ),
+        // Turn 1: analysis + final
+        Message::from_role_and_content(
+            Role::Assistant,
+            "The user provided a recursive Fibonacci implementation. O(2^n) complexity.",
+        )
+        .with_channel("analysis"),
+        Message::from_role_and_content(
+            Role::Assistant,
+            "This recursive Fibonacci has exponential time complexity. \
+             Would you like me to show optimized versions?",
+        )
+        .with_channel("final"),
+        Message::from_role_and_content(Role::User, "Yes, and benchmark them"),
+        // Turn 2: analysis + final
+        Message::from_role_and_content(
+            Role::Assistant,
+            "User wants benchmarks. I should run some Python code to compare performance.",
+        )
+        .with_channel("analysis"),
+        Message::from_role_and_content(Role::Assistant, "I'll benchmark both versions for you.")
+            .with_channel("final"),
+        Message::from_role_and_content(Role::User, "Run the benchmark for n=30"),
+        // Turn 3: analysis + tool call (no final after)
+        Message::from_role_and_content(
+            Role::Assistant,
+            "I need to execute Python code to run the benchmark for n=30.",
+        )
+        .with_channel("analysis"),
+        Message::from_role_and_content(
+            Role::Assistant,
+            r#"{"code": "import timeit\n\ndef fib_recursive(n):\n    if n <= 1: return n\n    return fib_recursive(n-1) + fib_recursive(n-2)\n\ndef fib_iter(n):\n    if n <= 1: return n\n    a, b = 0, 1\n    for _ in range(2, n+1): a, b = b, a+b\n    return b\n\nprint(timeit.timeit(lambda: fib_recursive(30), number=1))\nprint(timeit.timeit(lambda: fib_iter(30), number=1000))"}"#,
+        )
+        .with_channel("commentary")
+        .with_recipient("functions.python")
+        .with_content_type("json"),
+    ]);
+
+    let tokens = encoding
+        .render_conversation_for_completion(
+            &convo,
+            Role::Assistant,
+            Some(&crate::encoding::RenderConversationConfig {
+                auto_drop_analysis: true,
+            }),
+        )
+        .unwrap();
+
+    let decoded = encoding.tokenizer.decode_utf8(&tokens).unwrap();
+    assert_eq!(decoded, expected_output);
+}

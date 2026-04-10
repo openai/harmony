@@ -514,7 +514,7 @@ class HarmonyEncoding:
             }
 
         return self._inner.render(
-            message_json=message.to_json(), render_options=render_options_dict
+            message.to_json(), render_options_dict
         )
 
     # -- Parsing -------------------------------------------------------

@@ -245,7 +245,7 @@ def test_tool_call_with_constrain_tokenized_correctly(encoding_name):
     """
     encoding = load_harmony_encoding(encoding_name)
     text = (
-        "<|start|>assistant to=functions.get_weather<|channel|>commentary"
+        "<|start|>assistant<|channel|>commentary to=functions.get_weather"
         ' <|constrain|>json<|message|>{"location": "Tokyo"}<|call|>'
     )
     tokens = encoding.encode(text, allowed_special="all")

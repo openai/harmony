@@ -1,1 +1,1 @@
-<|start|>browser.search to=assistant<|channel|>commentary<|message|>{"result": "https://openai.com/"} 
+<|start|>browser.search<|channel|>commentary to=assistant<|message|>{"result": "https://openai.com/"} 

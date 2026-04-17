@@ -838,17 +838,30 @@ impl Render<Message> for HarmonyEncoding {
             }
         };
 
-        // next render the header recipient, if there is one
-        if let Some(recipient) = &message.recipient {
-            if recipient != "all" {
-                self.render_text_into(format!(" to={recipient}"), into)?;
-            }
-        }
+        // Header channel vs recipient order: commentary uses <|channel|>… before to=…;
+        // other channels keep to=… before <|channel|>… (legacy order).
+        let commentary_channel_first = message.channel.as_deref() == Some("commentary");
 
-        // next header channel
-        if let Some(channel) = &message.channel {
-            self.render_formatting_token_into(FormattingToken::Channel, into)?;
-            self.render_text_into(channel, into)?;
+        if commentary_channel_first {
+            if let Some(channel) = &message.channel {
+                self.render_formatting_token_into(FormattingToken::Channel, into)?;
+                self.render_text_into(channel, into)?;
+            }
+            if let Some(recipient) = &message.recipient {
+                if recipient != "all" {
+                    self.render_text_into(format!(" to={recipient}"), into)?;
+                }
+            }
+        } else {
+            if let Some(recipient) = &message.recipient {
+                if recipient != "all" {
+                    self.render_text_into(format!(" to={recipient}"), into)?;
+                }
+            }
+            if let Some(channel) = &message.channel {
+                self.render_formatting_token_into(FormattingToken::Channel, into)?;
+                self.render_text_into(channel, into)?;
+            }
         }
 
         // finally content type
@@ -865,7 +878,9 @@ impl Render<Message> for HarmonyEncoding {
                         self.render_text_into(rest, into)?;
                     }
                 } else {
-                    self.render_text_into(format!(" {content_type}"), into)?;
+                    self.render_text_into(" ", into)?;
+                    self.render_formatting_token_into(FormattingToken::ConstrainedFormat, into)?;
+                    self.render_text_into(content_type, into)?;
                 }
             } else {
                 self.render_text_into(format!(" {content_type}"), into)?;

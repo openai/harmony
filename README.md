@@ -53,6 +53,14 @@ We recommend using this library when working with models that use the [harmony r
 
 ## Using Harmony
 
+### Offline or network-restricted usage
+
+If you are deploying in an offline environment or other network-restricted setup, make sure the required `.tiktoken` vocab file is available locally before calling `load_harmony_encoding` or constructing an encoding in Rust. When `TIKTOKEN_ENCODINGS_BASE` is not set, Harmony may download and cache tokenizer assets automatically; that works for connected environments, but it should not be the default expectation for air-gapped deployments.
+
+For offline loading, place the needed vocab file (for example `o200k_base.tiktoken` or `cl100k_base.tiktoken`) in a local directory and set `TIKTOKEN_ENCODINGS_BASE` to that directory so the library can load from disk without requiring network access at runtime.
+
+This README note only clarifies existing behavior; it does not change how vocab resolution works today.
+
 ### Python
 
 [Check out the full documentation](./docs/python.md)

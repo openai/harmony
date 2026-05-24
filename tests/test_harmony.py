@@ -33,6 +33,7 @@ from openai_harmony import (  # noqa: E402
     Role,
     StreamableParser,
     SystemContent,
+    TextContent,
     ToolDescription,
     load_harmony_encoding,
 )
@@ -1244,3 +1245,50 @@ def test_streamable_parser_tricky_utf8_decoding():
 
     # Ensure if we're accumulating content deltas we still get the full utf-8 text
     assert "".join(content_deltas) == tricky_utf8_text
+
+
+def test_message_pydantic_serialization_preserves_content():
+    # Regression test for https://github.com/openai/harmony/issues/78
+    # ``Message.content`` is a list of ``Content`` subclasses, so the standard
+    # pydantic ``model_dump``/``model_dump_json`` used to drop the subclass fields
+    # and emit ``{}`` for each content item.
+    message = Message.from_role_and_content(
+        Role.ASSISTANT, "We respond politely."
+    ).with_channel("analysis")
+
+    dumped = message.model_dump()
+    assert dumped["content"] == [{"type": "text", "text": "We respond politely."}]
+    # The native dump now matches the bespoke ``to_dict`` helper.
+    assert dumped["content"] == message.to_dict()["content"]
+
+    # ``model_dump_json`` round-trips back to an equal object, reconstructing the
+    # concrete ``TextContent`` subclass via the ``type`` discriminator.
+    restored = Message.model_validate_json(message.model_dump_json())
+    assert isinstance(restored.content[0], TextContent)
+    assert restored == message
+
+
+def test_message_pydantic_serialization_system_and_developer_content():
+    # The discriminated union also covers the structured content variants.
+    system = Message.from_role_and_content(
+        Role.SYSTEM,
+        SystemContent.new().with_knowledge_cutoff("2024-06"),
+    )
+    developer = Message.from_role_and_content(
+        Role.DEVELOPER,
+        DeveloperContent.new().with_instructions("Talk like a pirate!"),
+    )
+
+    system_content = system.model_dump()["content"][0]
+    assert system_content["type"] == "system_content"
+    assert system_content["knowledge_cutoff"] == "2024-06"
+
+    developer_content = developer.model_dump()["content"][0]
+    assert developer_content["type"] == "developer_content"
+    assert developer_content["instructions"] == "Talk like a pirate!"
+
+    conversation = Conversation.from_messages([system, developer])
+    restored = Conversation.model_validate_json(conversation.model_dump_json())
+    assert isinstance(restored.messages[0].content[0], SystemContent)
+    assert isinstance(restored.messages[1].content[0], DeveloperContent)
+    assert restored == conversation

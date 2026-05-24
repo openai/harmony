@@ -16,6 +16,7 @@ import json
 from enum import Enum
 from typing import (
     AbstractSet,
+    Annotated,
     Any,
     Collection,
     Dict,
@@ -121,6 +122,7 @@ class Content(BaseModel):  # noqa: D101 – simple wrapper
 
 
 class TextContent(Content):
+    type: Literal["text"] = "text"
     text: str
 
     def to_dict(self) -> Dict[str, Any]:
@@ -179,6 +181,7 @@ class ToolNamespaceConfig(BaseModel):
 
 
 class SystemContent(Content):
+    type: Literal["system_content"] = "system_content"
     model_identity: Optional[str] = (
         "You are ChatGPT, a large language model trained by OpenAI."
     )
@@ -249,6 +252,7 @@ class SystemContent(Content):
 
 
 class DeveloperContent(Content):
+    type: Literal["developer_content"] = "developer_content"
     instructions: Optional[str] = None
     tools: Optional[dict[str, ToolNamespaceConfig]] = None
 
@@ -283,12 +287,24 @@ class DeveloperContent(Content):
         return cls(**raw)
 
 
+# A tagged union over the concrete ``Content`` variants. Typing ``Message.content``
+# with this (instead of the bare ``Content`` base class) makes the standard pydantic
+# ``model_dump``/``model_dump_json`` emit each item's own fields, and lets
+# ``model_validate``/``model_validate_json`` rebuild the right subclass. Without it a
+# ``Content`` item serialises as ``{}`` because the base class declares no fields
+# (see https://github.com/openai/harmony/issues/78).
+AnyContent = Annotated[
+    Union[TextContent, SystemContent, DeveloperContent],
+    Field(discriminator="type"),
+]
+
+
 # Message & Conversation -----------------------------------------------------
 
 
 class Message(BaseModel):
     author: Author
-    content: List[Content] = Field(default_factory=list)
+    content: List[AnyContent] = Field(default_factory=list)
     channel: Optional[str] = None
     recipient: Optional[str] = None
     content_type: Optional[str] = None

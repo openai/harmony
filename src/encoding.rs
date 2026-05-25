@@ -367,7 +367,7 @@ impl HarmonyEncoding {
         T: AsRef<str>,
         B: Extend<Rank>,
     {
-        into.extend(self.tokenizer.encode_ordinary(text.as_ref()));
+        into.extend(self.tokenizer.encode_ordinary(text.as_ref())?);
         Ok(())
     }
 

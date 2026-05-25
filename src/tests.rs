@@ -43,6 +43,7 @@ fn test_simple_convo() {
                 load_test_data("../test-data/test_simple_convo.txt").as_str(),
                 &encoding.tokenizer.special_tokens(),
             )
+            .unwrap()
             .0;
         let convo = Conversation::from_messages([
             Message::from_role_and_content(
@@ -101,6 +102,7 @@ fn test_simple_convo_with_effort() {
             let expected_tokens = encoding
                 .tokenizer
                 .encode(expected_text.as_str(), &encoding.tokenizer.special_tokens())
+                .unwrap()
                 .0;
             let sys = SystemContent::new()
                 .with_model_identity("You are ChatGPT, a large language model trained by OpenAI.")
@@ -195,6 +197,7 @@ fn test_reasoning_system_message() {
                 load_test_data("../test-data/test_reasoning_system_message.txt").as_str(),
                 &encoding.tokenizer.special_tokens(),
             )
+            .unwrap()
             .0;
         let convo = Conversation::from_messages([
             Message::from_role_and_content(
@@ -227,6 +230,7 @@ fn test_reasoning_system_message_no_instruction() {
                     .as_str(),
                 &encoding.tokenizer.special_tokens(),
             )
+            .unwrap()
             .0;
         let convo = Conversation::from_messages([
             Message::from_role_and_content(
@@ -261,6 +265,7 @@ fn test_reasoning_system_message_with_dates() {
                     .as_str(),
                 &encoding.tokenizer.special_tokens(),
             )
+            .unwrap()
             .0;
         let convo = Conversation::from_messages([
             Message::from_role_and_content(
@@ -548,6 +553,7 @@ fn test_tool_response_parsing() {
     let tokens = encoding
         .tokenizer
         .encode(&text_tokens, &encoding.tokenizer.special_tokens())
+        .unwrap()
         .0;
 
     let expected_message = Message::from_author_and_content(
@@ -575,6 +581,7 @@ fn test_encode_decode_roundtrip() {
     let tokens = encoding
         .tokenizer
         .encode(text, &std::collections::HashSet::new())
+        .unwrap()
         .0;
     assert_eq!(encoding.tokenizer.decode_utf8(&tokens).unwrap(), text);
 }
@@ -584,27 +591,46 @@ fn test_encode_allowed_special() {
     use std::collections::HashSet;
     let encoding = load_harmony_encoding(HarmonyEncodingName::HarmonyGptOss).unwrap();
     let text = "hello world";
-    let tokens = encoding.tokenizer.encode(text, &HashSet::new()).0;
+    let tokens = encoding.tokenizer.encode(text, &HashSet::new()).unwrap().0;
     assert_eq!(tokens, vec![24912, 2375]);
     // Allowed special token
     let mut allowed = HashSet::new();
     allowed.insert("<|start|>");
-    let tokens = encoding.tokenizer.encode("<|start|>", &allowed).0;
+    let tokens = encoding.tokenizer.encode("<|start|>", &allowed).unwrap().0;
     assert_eq!(tokens, vec![200006]);
     // Allowed special = all
     allowed = encoding.tokenizer.special_tokens(); // set of all special tokens
-    let tokens = encoding.tokenizer.encode("<|start|>", &allowed).0;
+    let tokens = encoding.tokenizer.encode("<|start|>", &allowed).unwrap().0;
     assert_eq!(tokens, vec![200006]);
     // Disallowed special (should error)
-    let result = encoding.tokenizer.encode("<|start|>", &HashSet::new());
+    let result = encoding
+        .tokenizer
+        .encode("<|start|>", &HashSet::new())
+        .unwrap();
     assert!(
         result.0.is_empty() || result.0 != vec![200006],
         "Expected error or not special token for disallowed special token"
     );
     // Disallowed special = empty (should not treat as special)
-    let tokens = encoding.tokenizer.encode("<|start|>", &HashSet::new()).0;
+    let tokens = encoding
+        .tokenizer
+        .encode("<|start|>", &HashSet::new())
+        .unwrap()
+        .0;
     // This may not match the Python fallback, but should not be the special token
     assert_ne!(tokens, vec![200006]);
+}
+
+#[test]
+fn test_encode_pathological_input_returns_error_instead_of_panicking() {
+    use std::collections::HashSet;
+    let encoding = load_harmony_encoding(HarmonyEncodingName::HarmonyGptOss).unwrap();
+    // A very long run of the same character makes the fancy-regex backtracking
+    // engine give up with a recoverable error. Encoding must surface that as an
+    // `Err` rather than panicking and taking down the host process (see #93).
+    let text = "a".repeat(1_300_000);
+    assert!(encoding.tokenizer.encode(&text, &HashSet::new()).is_err());
+    assert!(encoding.tokenizer.encode_ordinary(&text).is_err());
 }
 
 #[test]
@@ -630,6 +656,7 @@ fn test_streamable_parser() {
     let tokens = encoding
         .tokenizer
         .encode(&text, &encoding.tokenizer.special_tokens())
+        .unwrap()
         .0;
     let mut parser =
         crate::encoding::StreamableParser::new(encoding.clone(), Some(Role::Assistant)).unwrap();
@@ -838,7 +865,11 @@ fn test_streamable_parser_waits_for_multi_token_utf8_sequence() {
         parser.process(*token).unwrap();
     }
 
-    let emoji_tokens = encoding.tokenizer().encode("💖", &HashSet::new()).0;
+    let emoji_tokens = encoding
+        .tokenizer()
+        .encode("💖", &HashSet::new())
+        .unwrap()
+        .0;
     assert!(
         emoji_tokens.len() >= 2,
         "expected multi-token emoji encoding"

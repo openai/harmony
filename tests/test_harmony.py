@@ -896,6 +896,24 @@ def test_encode_allowed_special():
     ]
 
 
+def test_encode_pathological_input_raises_harmony_error():
+    # A very long run of the same character makes the underlying fancy-regex
+    # backtracking engine give up. This must be reported as a catchable
+    # HarmonyError instead of an uncatchable panic that crashes the host
+    # process (see issue #93).
+    encoding = load_harmony_encoding(HarmonyEncodingName.HARMONY_GPT_OSS)
+    text = "a" * 1_300_000
+
+    with pytest.raises(HarmonyError):
+        encoding.encode(text, allowed_special="all")
+
+    convo = Conversation.from_messages(
+        [Message.from_role_and_content(Role.USER, text)]
+    )
+    with pytest.raises(HarmonyError):
+        encoding.render_conversation_for_completion(convo, Role.ASSISTANT)
+
+
 def test_is_special_token():
     encoding = load_harmony_encoding(HarmonyEncodingName.HARMONY_GPT_OSS)
 

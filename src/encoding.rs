@@ -1059,6 +1059,8 @@ pub struct StreamableParser {
     messages: Vec<Message>,
     state: StreamState,
     stop_tokens: HashSet<Rank>,
+    start_token: Rank,
+    message_token: Rank,
     last_content_delta: Option<String>,
     undecoded_tokens: Vec<Rank>,
     undecoded_bytes: Vec<u8>,
@@ -1090,6 +1092,8 @@ impl StreamableParser {
         options: ParseOptions,
     ) -> anyhow::Result<Self> {
         let stop_tokens = encoding.stop_tokens()?;
+        let start_token = encoding.render_formatting_token(FormattingToken::Start)?;
+        let message_token = encoding.render_formatting_token(FormattingToken::Message)?;
         let (state, next_role) = match role {
             Some(role) => (
                 StreamState::Header {
@@ -1106,6 +1110,8 @@ impl StreamableParser {
             messages: Vec::new(),
             state,
             stop_tokens,
+            start_token,
+            message_token,
             last_content_delta: None,
             undecoded_tokens: Vec::new(),
             undecoded_bytes: Vec::new(),
@@ -1123,9 +1129,7 @@ impl StreamableParser {
         let next_role_clone = self.next_role.clone();
         match &mut self.state {
             StreamState::ExpectStart => {
-                let start = self
-                    .encoding
-                    .render_formatting_token(FormattingToken::Start)?;
+                let start = self.start_token;
                 match token {
                     Some(token) if token == start => {
                         self.state = StreamState::Header {
@@ -1147,9 +1151,7 @@ impl StreamableParser {
                 }
             }
             StreamState::Header { header_tokens } => {
-                let msg_tok = self
-                    .encoding
-                    .render_formatting_token(FormattingToken::Message)?;
+                let msg_tok = self.message_token;
                 match token {
                     Some(token) if token == msg_tok => {
                         // Clone the tokens and next_role, then clear the state before parsing

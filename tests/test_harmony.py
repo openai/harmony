@@ -983,6 +983,26 @@ def test_streamable_parser_tool_call_with_constrain_adjacent():
     assert parser.messages == expected
 
 
+def test_streamable_parser_constrained_output_without_recipient():
+    encoding = load_harmony_encoding(HarmonyEncodingName.HARMONY_GPT_OSS)
+    text = (
+        "<|start|>assistant<|channel|>final "
+        '<|constrain|>json<|message|>{"result":true}<|return|>'
+    )
+    tokens = encoding.encode(text, allowed_special="all")
+    expected = (
+        Message.from_role_and_content(Role.ASSISTANT, '{"result":true}')
+        .with_channel("final")
+        .with_content_type("<|constrain|>json")
+    )
+
+    parser = StreamableParser(encoding, None)
+    for token in tokens:
+        parser.process(token)
+
+    assert parser.messages == [expected]
+
+
 @pytest.mark.parametrize("strict, expect_error", [(False, False), (True, True)])
 def test_streamable_parser_missing_message_token(strict: bool, expect_error: bool):
     encoding = load_harmony_encoding(HarmonyEncodingName.HARMONY_GPT_OSS)

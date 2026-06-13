@@ -1323,6 +1323,18 @@ impl StreamableParser {
         Ok(self)
     }
 
+    fn is_constrained_content_type(&self, header_part: &str) -> bool {
+        let constrained_format_marker = self
+            .encoding
+            .mapped_format_token(FormattingToken::ConstrainedFormat);
+
+        if let Some(marker) = constrained_format_marker {
+            header_part.starts_with(marker)
+        } else {
+            false
+        }
+    }
+
     /// Helper to parse header metadata from a decoded string.
     /// Returns the parsed header and any remaining content after extracting header parts.
     ///
@@ -1420,12 +1432,11 @@ impl StreamableParser {
             if let Some(stripped) = last_part.strip_prefix("to=") {
                 // The header contains a recipient but *no* content-type.
                 recipient = Some(stripped.to_string());
-            } else if num_parts == 1 {
-                // Only one part total (after potential role removal) and it doesn't start
-                // with "to=" => interpret it as a standalone recipient.
+            } else if num_parts == 1 && !self.is_constrained_content_type(last_part) {
+                // A single unconstrained part is a standalone recipient.
                 recipient = Some(last_part.to_string());
             } else {
-                // More than one token and the last one is not a recipient -> treat as content-type.
+                // The last part is a content type, which may appear without a recipient.
                 content_type = Some(last_part.to_string());
 
                 // After removing the content-type there may be exactly one token describing the recipient.

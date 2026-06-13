@@ -675,6 +675,26 @@ fn test_streamable_parser_tool_call_with_constrain_adjacent() {
 }
 
 #[test]
+fn test_streamable_parser_constrained_output_without_recipient() {
+    let encoding = load_harmony_encoding(HarmonyEncodingName::HarmonyGptOss).unwrap();
+    let text = concat!(
+        "<|start|>assistant<|channel|>final ",
+        "<|constrain|>json<|message|>{\"result\":true}<|return|>"
+    );
+    let tokens = encoding.tokenizer().encode_with_special_tokens(text);
+    let expected = Message::from_role_and_content(Role::Assistant, "{\"result\":true}")
+        .with_channel("final")
+        .with_content_type("<|constrain|>json");
+    let mut parser = StreamableParser::new(encoding, None).unwrap();
+
+    for token in tokens {
+        parser.process(token).unwrap();
+    }
+
+    assert_eq!(parser.messages(), &[expected]);
+}
+
+#[test]
 fn test_missing_message_token_requires_non_strict_mode() {
     let encoding = load_harmony_encoding(HarmonyEncodingName::HarmonyGptOss).unwrap();
     let malformed = "<|channel|>commentary Hello<|end|>";

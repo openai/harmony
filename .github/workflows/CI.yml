@@ -42,15 +42,23 @@ jobs:
       matrix:
         platform:
           - runner: ubuntu-22.04
-            target: x86_64
+            target: x86_64-unknown-linux-gnu
+            arch: x86_64
           - runner: ubuntu-22.04
-            target: x86
+            target: i686-unknown-linux-gnu
+            arch: x86
           - runner: ubuntu-22.04
-            target: aarch64
+            target: aarch64-unknown-linux-gnu
+            arch: aarch64
           - runner: ubuntu-22.04
-            target: armv7
+            target: armv7-unknown-linux-gnueabihf
+            arch: armv7
           - runner: ubuntu-22.04
-            target: ppc64le
+            target: powerpc64le-unknown-linux-gnu
+            arch: ppc64le
+          - runner: ubuntu-22.04
+            target: riscv64gc-unknown-linux-gnu
+            arch: riscv64
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
@@ -70,7 +78,7 @@ jobs:
         if: ${{ startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: wheels-linux-${{ matrix.platform.target }}
+          name: wheels-linux-${{ matrix.platform.arch }}
           path: dist
 
   musllinux:

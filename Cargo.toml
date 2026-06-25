@@ -11,7 +11,11 @@ name = "openai_harmony"
 crate-type = ["rlib", "cdylib"]
 
 [features]
-default = []
+# Use the pure-Rust `rustls` TLS backend by default so we don't depend on an
+# OpenSSL installation on the CI runners.
+default = ["rustls-tls"]
+native-tls = ["reqwest/native-tls"]
+rustls-tls = ["reqwest/rustls-tls"]
 python-binding = ["pyo3"]
 wasm-binding = ["wasm-bindgen", "serde-wasm-bindgen", "wasm-bindgen-futures"]
 
@@ -29,16 +33,14 @@ rustc-hash = "1.1.0"
 bstr = "1.5.0"
 sha1 = "0.10.6"
 sha2 = "0.10.9"
-# Use the pure-Rust `rustls` TLS backend so we don't depend on an OpenSSL
-# installation on the CI runners. We disable the default features (which
-# include `platform-native-tls`) and explicitly enable only the capabilities
-# we need.
+# Disable the default features (which include `platform-native-tls`) and
+# explicitly enable only the capabilities we need. TLS backends are selected
+# based on the crate features above.
 reqwest = { version = "0.12.5", default-features = false, features = [
     "blocking",
     "json",
     "multipart",
     "stream",
-    "rustls-tls",
 ] }
 futures = "0.3"
 clap = { version = "4", features = ["derive"] }

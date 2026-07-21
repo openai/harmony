@@ -45,9 +45,9 @@ jobs:
             target: x86_64
           - runner: ubuntu-22.04
             target: x86
-          - runner: ubuntu-22.04
+          - runner: ubuntu-22.04-arm
             target: aarch64
-          - runner: ubuntu-22.04
+          - runner: ubuntu-22.04-arm
             target: armv7
           - runner: ubuntu-22.04
             target: ppc64le
@@ -58,9 +58,6 @@ jobs:
           python-version: 3.x
       - name: Build wheels
         uses: PyO3/maturin-action@db323e2cf5679b7feb8bcb561a36b27a0bc19e79 # v1
-        env:
-          # Ensure ring's ARM assembly sees an explicit architecture on aarch64 (glibc)
-          CFLAGS_aarch64_unknown_linux_gnu: -D__ARM_ARCH=8
         with:
           target: ${{ matrix.platform.target }}
           args: --release --out dist --find-interpreter
@@ -83,9 +80,9 @@ jobs:
             target: x86_64
           - runner: ubuntu-22.04
             target: x86
-          - runner: ubuntu-22.04
+          - runner: ubuntu-22.04-arm
             target: aarch64
-          - runner: ubuntu-22.04
+          - runner: ubuntu-22.04-arm
             target: armv7
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -94,9 +91,6 @@ jobs:
           python-version: 3.x
       - name: Build wheels
         uses: PyO3/maturin-action@db323e2cf5679b7feb8bcb561a36b27a0bc19e79 # v1
-        env:
-          # Ensure ring's ARM assembly sees an explicit architecture on aarch64 (musl)
-          CFLAGS_aarch64_unknown_linux_musl: -D__ARM_ARCH=8
         with:
           target: ${{ matrix.platform.target }}
           args: --release --out dist --find-interpreter

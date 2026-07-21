@@ -305,12 +305,7 @@ impl CoreBPE {
             let token_is_all_space = |token| {
                 self.decoder
                     .get(token)
-                    .map(|token_bytes| {
-                        token_bytes
-                            .iter()
-                            .rev()
-                            .all(|&b| [b' ', b'\n', b'\t'].contains(&b))
-                    })
+                    .map(|token_bytes| token_bytes.iter().rev().all(|&b| b" \n\t".contains(&b)))
                     .unwrap_or(false)
             };
             if last_piece_token_len > 0

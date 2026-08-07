@@ -96,7 +96,7 @@ Important methods:
 
 ### `RenderConversationConfig`
 
-Controls conversation rendering. It defaults to `auto_drop_analysis: true`; set the field to `false` and pass `Some(&config)` to a conversation rendering method to preserve analysis content.
+Controls conversation rendering. Passing `None` preserves analysis content. To drop eligible prior analysis, pass `Some(&RenderConversationConfig::default())`; its `auto_drop_analysis` field defaults to `true`. Set the field to `false` to preserve analysis when passing a config explicitly.
 
 ### `StreamableParser`
 

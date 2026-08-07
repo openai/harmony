@@ -1214,6 +1214,53 @@ def test_streamable_parser_invalid_utf8_decoding_multi_byte_token_no_eos_marker(
     assert parser.current_content == " \uFFFD interesting storyY"
 
 
+@pytest.mark.parametrize("length", [1, 399, 400, 401, 4096, 40000])
+def test_long_dash_run_round_trips(length: int):
+    encoding = load_harmony_encoding(HarmonyEncodingName.HARMONY_GPT_OSS)
+    text = "Hello" + "-" * length
+
+    tokens = encoding.encode(text, disallowed_special=())
+
+    assert encoding.decode(tokens) == text
+    assert encoding.encode(text, disallowed_special=()) == tokens
+
+
+def test_very_large_dash_run_round_trips():
+    encoding = load_harmony_encoding(HarmonyEncodingName.HARMONY_GPT_OSS)
+    text = "-" * 100_000
+
+    tokens = encoding.encode(text, disallowed_special=())
+
+    assert encoding.decode(tokens) == text
+    assert encoding.encode(text, disallowed_special=()) == tokens
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "你好，世界！这是一个测试。" * 5,
+        "مرحبا بالعالم، هذا اختبار." * 5,
+        "Привет, мир! Это тест." * 5,
+        "नमस्ते दुनिया, यह एक परीक्षण है।" * 5,
+        "こんにちは世界。これはテストです。" * 5,
+        "😀🎉👍🏽🚀❤️‍🔥" * 80,
+        "Café, naïve, façade, Zürich, Straße." * 10,
+        "Hello world 123 !!! " + "-" * 2000 + " more text 456.",
+        "分" * 1000,
+        "🙂" * 600,
+        "あ" * 133,
+        "あ" * 134,
+    ],
+)
+def test_large_multilingual_and_mixed_text_round_trips(text: str):
+    encoding = load_harmony_encoding(HarmonyEncodingName.HARMONY_GPT_OSS)
+
+    tokens = encoding.encode(text, disallowed_special=())
+
+    assert encoding.decode(tokens) == text
+    assert encoding.encode(text, disallowed_special=()) == tokens
+
+
 def test_streamable_parser_tricky_utf8_decoding():
     """Try text with various types of utf-8 sequences that are more likely to fail."""
     encoding = load_harmony_encoding(HarmonyEncodingName.HARMONY_GPT_OSS)

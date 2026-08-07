@@ -1,4 +1,6 @@
 use std::borrow::Borrow;
+use std::cmp::Reverse;
+use std::collections::BinaryHeap;
 use std::collections::HashSet;
 use std::num::NonZeroU64;
 use std::thread;
@@ -7,6 +9,12 @@ use fancy_regex::Regex;
 use rustc_hash::FxHashMap as HashMap;
 
 pub type Rank = u32;
+
+/// Pieces at least this many bytes long use the heap-based merge, which avoids
+/// the quadratic full-rescan/`Vec::remove` cost of the vector merge on long
+/// runs (e.g. many repeated dashes). Shorter pieces keep the cache-friendly
+/// vector path. Both paths produce identical token IDs.
+const LARGE_PIECE_THRESHOLD: usize = 400;
 
 fn _byte_pair_merge(ranks: &HashMap<Vec<u8>, Rank>, piece: &[u8]) -> Vec<(usize, Rank)> {
     // This is a vector of (start, rank).
@@ -70,10 +78,92 @@ pub fn byte_pair_encode(piece: &[u8], ranks: &HashMap<Vec<u8>, Rank>) -> Vec<Ran
     if piece.len() == 1 {
         return vec![ranks[piece]];
     }
-    _byte_pair_merge(ranks, piece)
+    let parts = if piece.len() < LARGE_PIECE_THRESHOLD {
+        _byte_pair_merge(ranks, piece)
+    } else {
+        _byte_pair_merge_heap(ranks, piece)
+    };
+    parts
         .windows(2)
         .map(|part| ranks[&piece[part[0].0..part[1].0]])
         .collect()
+}
+
+/// Heap-based equivalent of [`_byte_pair_merge`] for large pieces.
+///
+/// It merges the leftmost lowest-rank pair at every step, exactly like the
+/// vector implementation, but tracks boundaries with a doubly linked list and a
+/// binary heap. This turns the per-merge full-vector rescan and `Vec::remove`
+/// (O(mn) overall) into O(m log n), which removes the quadratic blow-up on long
+/// runs such as sequences of dashes. The returned boundary vector is identical
+/// to the one produced by `_byte_pair_merge`.
+fn _byte_pair_merge_heap(ranks: &HashMap<Vec<u8>, Rank>, piece: &[u8]) -> Vec<(usize, Rank)> {
+    let n = piece.len();
+
+    // Doubly linked list over current token start positions; `n` is the end
+    // sentinel. `prev[0]` is `usize::MAX` (no predecessor).
+    let mut next: Vec<usize> = (0..=n).map(|i| i + 1).collect();
+    let mut prev: Vec<usize> = (0..=n).map(|i| i.wrapping_sub(1)).collect();
+    let mut alive: Vec<bool> = vec![true; n];
+
+    // Rank of merging the token starting at `p` with its successor, matching
+    // `get_rank` in the vector implementation. `Rank::MAX` means "not mergeable".
+    let pair_rank = |next: &[usize], p: usize| -> Rank {
+        let q = next[p];
+        if q >= n {
+            return Rank::MAX;
+        }
+        let r = next[q];
+        ranks.get(&piece[p..r]).copied().unwrap_or(Rank::MAX)
+    };
+
+    // Min-heap keyed by (rank, position): ties resolve to the leftmost pair, so
+    // the merge order matches the vector scan's strict `<` (leftmost-min) rule.
+    let mut heap: BinaryHeap<Reverse<(Rank, usize)>> = BinaryHeap::with_capacity(n);
+    for p in 0..n.saturating_sub(1) {
+        let rank = pair_rank(&next, p);
+        if rank != Rank::MAX {
+            heap.push(Reverse((rank, p)));
+        }
+    }
+
+    while let Some(Reverse((rank, p))) = heap.pop() {
+        if !alive[p] {
+            continue;
+        }
+        // Lazy deletion: skip entries whose rank no longer matches the current
+        // pair at `p`. The true current minimum always has a matching entry.
+        if pair_rank(&next, p) != rank {
+            continue;
+        }
+
+        let q = next[p];
+        let r = next[q];
+        alive[q] = false;
+        next[p] = r;
+        prev[r] = p;
+
+        let rp = pair_rank(&next, p);
+        if rp != Rank::MAX {
+            heap.push(Reverse((rp, p)));
+        }
+        let pp = prev[p];
+        if pp != usize::MAX {
+            let rpp = pair_rank(&next, pp);
+            if rpp != Rank::MAX {
+                heap.push(Reverse((rpp, pp)));
+            }
+        }
+    }
+
+    let mut parts = Vec::with_capacity(n + 1);
+    let mut p = 0;
+    while p < n {
+        parts.push((p, Rank::MAX));
+        p = next[p];
+    }
+    parts.push((n, Rank::MAX));
+    parts
 }
 
 // Various performance notes:
@@ -142,7 +232,6 @@ impl std::fmt::Display for DecodeKeyError {
         write!(f, "Invalid token for decoding: {}", self.token)
     }
 }
-
 impl std::error::Error for DecodeKeyError {}
 
 #[derive(Debug, Clone)]
@@ -155,7 +244,6 @@ impl std::fmt::Display for DecodeError {
         write!(f, "Could not decode tokens: {}", self.message)
     }
 }
-
 impl std::error::Error for DecodeError {}
 
 const MAX_NUM_THREADS: usize = 128;
@@ -521,5 +609,480 @@ impl CoreBPE {
 
     pub fn is_special_token(&self, token: Rank) -> bool {
         self.special_tokens_decoder.contains_key(&token)
+    }
+}
+
+#[cfg(test)]
+mod bpe_merge_tests {
+    use super::{
+        _byte_pair_merge, _byte_pair_merge_heap, byte_pair_encode, BinaryHeap, CoreBPE, Rank,
+        Reverse, LARGE_PIECE_THRESHOLD,
+    };
+    use crate::{load_harmony_encoding, HarmonyEncodingName};
+    use rustc_hash::FxHashMap as HashMap;
+    use std::collections::HashSet;
+
+    /// Boundary start positions produced by a merge function. `byte_pair_encode`
+    /// only reads `part.0`, so equal start sequences mean identical tokens.
+    fn starts(parts: &[(usize, Rank)]) -> Vec<usize> {
+        parts.iter().map(|p| p.0).collect()
+    }
+
+    /// Simple deterministic xorshift so tests need no rand dependency.
+    struct Rng(u64);
+    impl Rng {
+        fn next_u32(&mut self) -> u32 {
+            let mut x = self.0;
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            self.0 = x;
+            (x >> 32) as u32
+        }
+    }
+
+    #[test]
+    fn heap_matches_vector_on_synthetic_ranks() {
+        // A small BPE table over a 4-symbol alphabet, including overlapping
+        // pairs so tie-breaking (leftmost-lowest-rank) is exercised.
+        let alphabet = [b'a', b'b', b'c', b'-'];
+        let mut ranks: HashMap<Vec<u8>, Rank> = HashMap::default();
+        let mut rank = 0u32;
+        for &b in &alphabet {
+            ranks.insert(vec![b], rank);
+            rank += 1;
+        }
+        for &b0 in &alphabet {
+            for &b1 in &alphabet {
+                ranks.insert(vec![b0, b1], rank);
+                rank += 1;
+            }
+        }
+        for &b0 in &alphabet {
+            for &b1 in &alphabet {
+                for &b2 in &alphabet {
+                    ranks.insert(vec![b0, b1, b2], rank);
+                    rank += 1;
+                }
+            }
+        }
+
+        let mut rng = Rng(0x1234_5678_9abc_def0);
+        for _ in 0..2000 {
+            let len = 2 + (rng.next_u32() as usize % 64);
+            let piece: Vec<u8> = (0..len)
+                .map(|_| alphabet[rng.next_u32() as usize % alphabet.len()])
+                .collect();
+            let vec_parts = _byte_pair_merge(&ranks, &piece);
+            let heap_parts = _byte_pair_merge_heap(&ranks, &piece);
+            assert_eq!(
+                starts(&vec_parts),
+                starts(&heap_parts),
+                "mismatch for piece {piece:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn heap_matches_vector_on_real_ranks() {
+        let encoding = load_harmony_encoding(HarmonyEncodingName::HarmonyGptOss).unwrap();
+        let ranks = &encoding.tokenizer.encoder;
+
+        // Long runs of a single byte are the pathological case from issue #79,
+        // including lengths straddling the dispatch threshold.
+        let mut lengths = vec![
+            2usize,
+            3,
+            16,
+            LARGE_PIECE_THRESHOLD - 1,
+            LARGE_PIECE_THRESHOLD,
+            LARGE_PIECE_THRESHOLD + 1,
+            1024,
+            4096,
+        ];
+        lengths.sort_unstable();
+        for &len in &lengths {
+            for &byte in &[b'-', b'a', b' ', b'\n'] {
+                let piece = vec![byte; len];
+                assert_eq!(
+                    starts(&_byte_pair_merge(ranks, &piece)),
+                    starts(&_byte_pair_merge_heap(ranks, &piece)),
+                    "single-byte run mismatch: byte={byte} len={len}"
+                );
+            }
+        }
+
+        // Randomized printable-ASCII pieces across short and long lengths.
+        let mut rng = Rng(0xdead_beef_cafe_f00d);
+        for _ in 0..1500 {
+            let len = 2 + (rng.next_u32() as usize % 900);
+            let piece: Vec<u8> = (0..len)
+                .map(|_| 0x20u8 + (rng.next_u32() as u8 % 0x5f))
+                .collect();
+            let vec_parts = _byte_pair_merge(ranks, &piece);
+            let heap_parts = _byte_pair_merge_heap(ranks, &piece);
+            assert_eq!(
+                starts(&vec_parts),
+                starts(&heap_parts),
+                "random piece mismatch (len {len})"
+            );
+            // The public entry point must also agree with the vector merge.
+            let via_entry = byte_pair_encode(&piece, ranks);
+            let via_vector: Vec<Rank> = vec_parts
+                .windows(2)
+                .map(|w| ranks[&piece[w[0].0..w[1].0]])
+                .collect();
+            assert_eq!(
+                via_entry, via_vector,
+                "byte_pair_encode mismatch (len {len})"
+            );
+        }
+    }
+
+    #[test]
+    fn heap_matches_vector_on_full_byte_range_random_pieces() {
+        // Covers the entire 0..=255 byte space, including bytes that never
+        // appear as valid standalone UTF-8 (e.g. lone continuation bytes).
+        // `_byte_pair_merge`/`byte_pair_encode` operate on raw bytes and must
+        // not panic or disagree regardless of what a regex piece contains.
+        let encoding = load_harmony_encoding(HarmonyEncodingName::HarmonyGptOss).unwrap();
+        let ranks = &encoding.tokenizer.encoder;
+
+        let mut rng = Rng(0x0ff5_e11e_b47e_5eed);
+        for _ in 0..1500 {
+            let len = 2 + (rng.next_u32() as usize % 900);
+            let piece: Vec<u8> = (0..len).map(|_| rng.next_u32() as u8).collect();
+            let vec_parts = _byte_pair_merge(ranks, &piece);
+            let heap_parts = _byte_pair_merge_heap(ranks, &piece);
+            assert_eq!(
+                starts(&vec_parts),
+                starts(&heap_parts),
+                "full-byte-range piece mismatch (len {len})"
+            );
+        }
+    }
+
+    #[test]
+    fn heap_matches_vector_on_multilingual_and_mixed_random_pieces() {
+        // Correctness contract: cover repeated characters, whitespace,
+        // punctuation, multilingual text, and mixed inputs.
+        let encoding = load_harmony_encoding(HarmonyEncodingName::HarmonyGptOss).unwrap();
+        let ranks = &encoding.tokenizer.encoder;
+
+        // Pool of byte chunks drawn from real multilingual/mixed text, so
+        // random concatenations still contain realistic multi-byte UTF-8
+        // structure, whitespace, punctuation, digits, and code-like tokens.
+        let pool_text = concat!(
+            "Hello, World! 123 456 789 --- ___ /// \\\\ ",
+            "你好世界这是一个测试的中文文本 ",
+            "مرحبا بالعالم هذا اختبار للنص العربي ",
+            "Привет мир это тест русского текста ",
+            "नमस्ते दुनिया यह हिन्दी पाठ परीक्षण है ",
+            "こんにちは世界これは日本語のテストです ",
+            "😀🎉👍🏽🚀❤️‍🔥🙂🙃😅 ",
+            "Café naïve façade Zürich Straße résumé jalapeño ",
+            "def foo(x, y):\n    return x + y  # code-ish\n",
+        );
+        let pool: Vec<u8> = pool_text.bytes().collect();
+
+        let mut rng = Rng(0x0b5e_ed00_face_cafe);
+        for _ in 0..1500 {
+            let len = 2 + (rng.next_u32() as usize % 900);
+            let piece: Vec<u8> = (0..len)
+                .map(|_| pool[rng.next_u32() as usize % pool.len()])
+                .collect();
+            let vec_parts = _byte_pair_merge(ranks, &piece);
+            let heap_parts = _byte_pair_merge_heap(ranks, &piece);
+            assert_eq!(
+                starts(&vec_parts),
+                starts(&heap_parts),
+                "multilingual/mixed piece mismatch (len {len})"
+            );
+        }
+
+        // Long *contiguous* runs of a single non-dash multilingual unit -
+        // the same pathology as issue #79 but for other scripts.
+        let long_samples: Vec<Vec<u8>> = vec![
+            "分".repeat(2000).into_bytes(),
+            "🙂".repeat(1200).into_bytes(),
+            "ك".repeat(2000).into_bytes(),
+            "_".repeat(50_000).into_bytes(),
+        ];
+        for piece in &long_samples {
+            assert_eq!(
+                starts(&_byte_pair_merge(ranks, piece)),
+                starts(&_byte_pair_merge_heap(ranks, piece)),
+                "long multilingual run mismatch (len {})",
+                piece.len()
+            );
+        }
+    }
+
+    /// Recomputes `encode_ordinary`'s token sequence for `text` while forcing
+    /// the vector merge on every piece, independent of `byte_pair_encode`'s
+    /// dispatch logic. This is a ground-truth oracle for the public API: if
+    /// `CoreBPE::encode_ordinary`/`CoreBPE::encode` ever diverge from it, the
+    /// dispatch (not just the low-level merge) has broken behavior.
+    fn oracle_encode_ordinary_vector_only(bpe: &CoreBPE, text: &str) -> Vec<Rank> {
+        let regex = bpe._get_tl_regex();
+        let mut ret = vec![];
+        for mat in regex.find_iter(text) {
+            let piece = mat.unwrap().as_str().as_bytes();
+            match bpe.encoder.get(piece) {
+                Some(token) => ret.push(*token),
+                None => {
+                    let parts = _byte_pair_merge(&bpe.encoder, piece);
+                    ret.extend(
+                        parts
+                            .windows(2)
+                            .map(|w| bpe.encoder[&piece[w[0].0..w[1].0]]),
+                    );
+                }
+            }
+        }
+        ret
+    }
+
+    #[test]
+    fn encode_and_encode_ordinary_match_vector_oracle_on_multilingual_and_mixed_text() {
+        // Preserve `encode`/`encode_ordinary` behavior end-to-end (not just
+        // the internal merge helper) on multilingual and mixed real text,
+        // including runs that straddle `LARGE_PIECE_THRESHOLD`.
+        let encoding = load_harmony_encoding(HarmonyEncodingName::HarmonyGptOss).unwrap();
+        let bpe = encoding.tokenizer();
+
+        let mut samples: Vec<String> = vec![
+            "你好，世界！这是一个测试。".repeat(5),
+            "مرحبا بالعالم، هذا اختبار.".repeat(5),
+            "Привет, мир! Это тест.".repeat(5),
+            "नमस्ते दुनिया, यह एक परीक्षण है।".repeat(5),
+            "こんにちは世界。これはテストです。".repeat(5),
+            "😀🎉👍🏽🚀❤️‍🔥".repeat(80),
+            "Café, naïve, façade, Zürich, Straße.".repeat(10),
+            format!("Hello world 123 !!! {} more text 456.", "-".repeat(2000)),
+            "分".repeat(1000),
+            "🙂".repeat(600),
+        ];
+        // Lengths straddling LARGE_PIECE_THRESHOLD (400 bytes) for a 3-byte
+        // CJK character: 133*3=399, 134*3=402.
+        samples.push("あ".repeat(133));
+        samples.push("あ".repeat(134));
+
+        for text in &samples {
+            let via_ordinary = bpe.encode_ordinary(text);
+            let oracle = oracle_encode_ordinary_vector_only(bpe, text);
+            assert_eq!(
+                via_ordinary, oracle,
+                "encode_ordinary mismatch for {text:?}"
+            );
+
+            let decoded = bpe.decode_utf8(via_ordinary.clone()).unwrap();
+            assert_eq!(&decoded, text, "round-trip mismatch for {text:?}");
+
+            // None of the samples contain special-token markers, so `encode`
+            // with an empty allow-list must match `encode_ordinary` exactly.
+            let (via_encode, _) = bpe.encode(text, &HashSet::new());
+            assert_eq!(
+                via_encode, via_ordinary,
+                "encode/encode_ordinary mismatch for {text:?}"
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // Complexity evidence: instrumented operation-count clones.
+    //
+    // A wall-clock sampling profiler (e.g. `samply`) was attempted for this
+    // evidence but requires the Windows Performance Toolkit (`xperf`), which
+    // needs an interactive elevated ADK install not available in this
+    // environment. Counting the exact operations the code comment names -
+    // "rescan" steps for the vector merge (O(mn)) and heap pops for the heap
+    // merge (O(m log n)) - is a more precise, deterministic, and
+    // machine-independent substitute for proving the asymptotic complexity
+    // claim, and doubles as a regression guard against the old scaling
+    // returning silently.
+    // -----------------------------------------------------------------
+
+    /// Verbatim copy of `_byte_pair_merge`'s algorithm, instrumented to count
+    /// full-vector rescan steps (the `for (i, &(_, rank)) in ...` loop body
+    /// that runs once per remaining part on every merge). This is exactly the
+    /// operation the source comment calls out as making the function O(mn).
+    fn _byte_pair_merge_counting(ranks: &HashMap<Vec<u8>, Rank>, piece: &[u8]) -> u64 {
+        let mut rescan_steps: u64 = 0;
+        let mut parts = Vec::with_capacity(piece.len() + 1);
+
+        let mut min_rank: (Rank, usize) = (Rank::MAX, usize::MAX);
+        for i in 0..piece.len() - 1 {
+            let rank = *ranks.get(&piece[i..i + 2]).unwrap_or(&Rank::MAX);
+            if rank < min_rank.0 {
+                min_rank = (rank, i);
+            }
+            parts.push((i, rank));
+        }
+        parts.push((piece.len() - 1, Rank::MAX));
+        parts.push((piece.len(), Rank::MAX));
+
+        let get_rank = {
+            #[inline(always)]
+            |parts: &Vec<(usize, Rank)>, i: usize| {
+                if (i + 3) < parts.len() {
+                    *ranks
+                        .get(&piece[parts[i].0..parts[i + 3].0])
+                        .unwrap_or(&Rank::MAX)
+                } else {
+                    Rank::MAX
+                }
+            }
+        };
+
+        while min_rank.0 != Rank::MAX {
+            let i = min_rank.1;
+            if i > 0 {
+                parts[i - 1].1 = get_rank(&parts, i - 1);
+            }
+            parts[i].1 = get_rank(&parts, i);
+            parts.remove(i + 1);
+
+            min_rank = (Rank::MAX, usize::MAX);
+            for (i, &(_, rank)) in parts[..parts.len() - 1].iter().enumerate() {
+                rescan_steps += 1;
+                if rank < min_rank.0 {
+                    min_rank = (rank, i);
+                }
+            }
+        }
+        rescan_steps
+    }
+
+    /// Verbatim copy of `_byte_pair_merge_heap`'s algorithm, instrumented to
+    /// count `heap.pop()` calls - the operation that makes the function
+    /// O(m log n) instead of O(mn).
+    fn _byte_pair_merge_heap_counting(ranks: &HashMap<Vec<u8>, Rank>, piece: &[u8]) -> u64 {
+        let mut heap_pops: u64 = 0;
+        let n = piece.len();
+
+        let mut next: Vec<usize> = (0..=n).map(|i| i + 1).collect();
+        let mut prev: Vec<usize> = (0..=n).map(|i| i.wrapping_sub(1)).collect();
+        let mut alive: Vec<bool> = vec![true; n];
+
+        let pair_rank = |next: &[usize], p: usize| -> Rank {
+            let q = next[p];
+            if q >= n {
+                return Rank::MAX;
+            }
+            let r = next[q];
+            ranks.get(&piece[p..r]).copied().unwrap_or(Rank::MAX)
+        };
+
+        let mut heap: BinaryHeap<Reverse<(Rank, usize)>> = BinaryHeap::with_capacity(n);
+        for p in 0..n.saturating_sub(1) {
+            let rank = pair_rank(&next, p);
+            if rank != Rank::MAX {
+                heap.push(Reverse((rank, p)));
+            }
+        }
+
+        while let Some(Reverse((rank, p))) = heap.pop() {
+            heap_pops += 1;
+            if !alive[p] {
+                continue;
+            }
+            if pair_rank(&next, p) != rank {
+                continue;
+            }
+
+            let q = next[p];
+            let r = next[q];
+            alive[q] = false;
+            next[p] = r;
+            prev[r] = p;
+
+            let rp = pair_rank(&next, p);
+            if rp != Rank::MAX {
+                heap.push(Reverse((rp, p)));
+            }
+            let pp = prev[p];
+            if pp != usize::MAX {
+                let rpp = pair_rank(&next, pp);
+                if rpp != Rank::MAX {
+                    heap.push(Reverse((rpp, pp)));
+                }
+            }
+        }
+        heap_pops
+    }
+
+    #[test]
+    fn complexity_probe_vector_is_quadratic_heap_is_quasilinear_on_dash_runs() {
+        // Sanity check first: the counting clones must be faithful copies of
+        // the real algorithms, i.e. produce the same tokens.
+        let encoding = load_harmony_encoding(HarmonyEncodingName::HarmonyGptOss).unwrap();
+        let ranks = &encoding.tokenizer.encoder;
+        for &len in &[64usize, 1000, 5000] {
+            let piece = vec![b'-'; len];
+            assert_eq!(
+                starts(&_byte_pair_merge(ranks, &piece)),
+                starts(&_byte_pair_merge_heap(ranks, &piece)),
+                "sanity: real implementations disagree at len {len}"
+            );
+        }
+
+        let lengths = [512usize, 1024, 2048, 4096, 8192, 16384, 32768];
+        eprintln!("\nissue #79 complexity evidence (dash runs, real o200k ranks):");
+        eprintln!(
+            "{:>8}  {:>14}  {:>12}  {:>10}  {:>10}",
+            "dashes", "vector_rescans", "heap_pops", "v_ratio", "h_ratio"
+        );
+
+        let mut prev_vector: Option<u64> = None;
+        let mut prev_heap: Option<u64> = None;
+        let mut vector_ratios = vec![];
+        let mut heap_ratios = vec![];
+        for &len in &lengths {
+            let piece = vec![b'-'; len];
+            let vector_steps = _byte_pair_merge_counting(ranks, &piece);
+            let heap_pops = _byte_pair_merge_heap_counting(ranks, &piece);
+
+            let v_ratio = prev_vector.map(|p| vector_steps as f64 / p as f64);
+            let h_ratio = prev_heap.map(|p| heap_pops as f64 / p as f64);
+            eprintln!(
+                "{:>8}  {:>14}  {:>12}  {:>10}  {:>10}",
+                len,
+                vector_steps,
+                heap_pops,
+                v_ratio
+                    .map(|r| format!("{r:.2}x"))
+                    .unwrap_or_else(|| "-".into()),
+                h_ratio
+                    .map(|r| format!("{r:.2}x"))
+                    .unwrap_or_else(|| "-".into()),
+            );
+            if let Some(r) = v_ratio {
+                vector_ratios.push(r);
+            }
+            if let Some(r) = h_ratio {
+                heap_ratios.push(r);
+            }
+            prev_vector = Some(vector_steps);
+            prev_heap = Some(heap_pops);
+        }
+
+        // Quadratic growth means each length doubling should multiply the
+        // vector's rescan-step count by roughly 4x (asymptotically). Require
+        // it clearly exceeds linear (2x) growth to confirm O(mn) behavior.
+        let avg_vector_ratio = vector_ratios.iter().sum::<f64>() / vector_ratios.len() as f64;
+        assert!(
+            avg_vector_ratio > 3.0,
+            "expected clearly super-linear (~4x) growth in vector rescan steps per doubling, got avg {avg_vector_ratio:.2}x"
+        );
+
+        // O(m log n) growth means each doubling should roughly double the
+        // heap-pop count times a small constant, not quadruple it. Require it
+        // stays well below the vector's quadratic growth.
+        let avg_heap_ratio = heap_ratios.iter().sum::<f64>() / heap_ratios.len() as f64;
+        assert!(
+            avg_heap_ratio < 2.5,
+            "expected near-linear (~2x) growth in heap-pop count per doubling, got avg {avg_heap_ratio:.2}x"
+        );
     }
 }

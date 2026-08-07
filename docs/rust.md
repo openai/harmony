@@ -13,7 +13,7 @@ openai-harmony = { git = "https://github.com/openai/harmony" }
 and import the items you need:
 
 ```rust
-use openai_harmony::{load_harmony_encoding, HarmonyEncodingName};
+use openai_harmony::{load_harmony_encoding, HarmonyEncodingName, RenderConversationConfig};
 use openai_harmony::chat::{Message, Role, Conversation};
 ```
 
@@ -93,6 +93,10 @@ Important methods:
 - `stop_tokens()` and `stop_tokens_for_assistant_actions()` – sets of stop tokens for sampling.
 
 `ParseOptions` currently exposes a single field, `strict`, which defaults to `true`. Set it to `false` when you need to recover from malformed model output in downstream systems.
+
+### `RenderConversationConfig`
+
+Controls conversation rendering. Passing `None` preserves analysis content. To drop eligible prior analysis, pass `Some(&RenderConversationConfig::default())`; its `auto_drop_analysis` field defaults to `true`. Set the field to `false` to preserve analysis when passing a config explicitly.
 
 ### `StreamableParser`
 

@@ -115,13 +115,19 @@ openai-harmony = { git = "https://github.com/openai/harmony" }
 
 ```rust
 use openai_harmony::chat::{Message, Role, Conversation};
-use openai_harmony::{HarmonyEncodingName, load_harmony_encoding};
+use openai_harmony::{
+    HarmonyEncodingName, RenderConversationConfig, load_harmony_encoding,
+};
 
 fn main() -> anyhow::Result<()> {
     let enc = load_harmony_encoding(HarmonyEncodingName::HarmonyGptOss)?;
     let convo =
         Conversation::from_messages([Message::from_role_and_content(Role::User, "Hello there!")]);
-    let tokens = enc.render_conversation_for_completion(&convo, Role::Assistant, None)?;
+    let config = RenderConversationConfig {
+        auto_drop_analysis: false,
+    };
+    let tokens =
+        enc.render_conversation_for_completion(&convo, Role::Assistant, Some(&config))?;
     println!("{:?}", tokens);
     Ok(())
 }

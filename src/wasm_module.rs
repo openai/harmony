@@ -214,7 +214,12 @@ impl JsHarmonyEncoding {
             };
         let allowed_set: std::collections::HashSet<&str> =
             allowed_vec.iter().map(|s| s.as_str()).collect();
-        Ok(self.inner.tokenizer().encode(text, &allowed_set).0)
+        let (tokens, _) = self
+            .inner
+            .tokenizer()
+            .encode(text, &allowed_set)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        Ok(tokens)
     }
 
     #[wasm_bindgen(js_name = specialTokens)]

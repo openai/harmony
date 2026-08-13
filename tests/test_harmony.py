@@ -1244,3 +1244,25 @@ def test_streamable_parser_tricky_utf8_decoding():
 
     # Ensure if we're accumulating content deltas we still get the full utf-8 text
     assert "".join(content_deltas) == tricky_utf8_text
+
+
+def test_encode_long_single_char_run_raises_catchable_error():
+    """A pathological long single-character run makes the fancy_regex backtracking
+    engine exceed its stack limit. This must surface as a normal, catchable Python
+    exception rather than an uncatchable ``pyo3_runtime.PanicException`` that would
+    abort a host process.
+    """
+    encoding = load_harmony_encoding(HarmonyEncodingName.HARMONY_GPT_OSS)
+    long_run = "a" * 1_300_000
+
+    # The exception must be catchable via ``except Exception`` (PanicException
+    # subclasses BaseException and would slip past such a handler).
+    with pytest.raises(Exception) as exc_info:
+        encoding.encode(long_run, allowed_special="all")
+
+    assert isinstance(exc_info.value, HarmonyError)
+    assert type(exc_info.value).__name__ != "PanicException"
+
+    # Ensure the tokenizer is still usable afterwards and ordinary text round-trips.
+    tokens = encoding.encode("hello world", allowed_special="all")
+    assert encoding.decode_utf8(tokens) == "hello world"

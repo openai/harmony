@@ -1,6 +1,6 @@
 use crate::{
     chat::{Author, Content, Message, ReasoningEffort, Role, SystemContent, TextContent},
-    tiktoken::{CoreBPE, Rank},
+    tiktoken::{CoreBPE, EncodeError, Rank},
 };
 use anyhow::Context as _;
 use std::{
@@ -32,6 +32,9 @@ pub(crate) enum RenderFormattingTokenError {
         token: FormattingToken,
         encoding: Vec<Rank>,
     },
+
+    #[error(transparent)]
+    Encode(#[from] EncodeError),
 }
 
 /// These are formatting tokens that the renderer can use to generically
@@ -339,7 +342,7 @@ impl HarmonyEncoding {
         let mapped = self
             .mapped_format_token(t)
             .ok_or(RenderFormattingTokenError::UnmappedToken(t))?;
-        let encoded = self.tokenizer.encode_with_special_tokens(mapped);
+        let encoded = self.tokenizer.encode_with_special_tokens(mapped)?;
         if encoded.len() != 1 {
             return Err(RenderFormattingTokenError::InvalidEncoding {
                 token: t,
@@ -367,7 +370,7 @@ impl HarmonyEncoding {
         T: AsRef<str>,
         B: Extend<Rank>,
     {
-        into.extend(self.tokenizer.encode_ordinary(text.as_ref()));
+        into.extend(self.tokenizer.encode_ordinary(text.as_ref())?);
         Ok(())
     }
 

@@ -411,7 +411,10 @@ fn openai_harmony(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
 
     // Convenience functions to get the tool configs for the browser and python tools.
     #[pyfunction]
-    fn get_tool_namespace_config(py: Python<'_>, tool: &str) -> PyResult<PyObject> {
+    fn get_tool_namespace_config<'py>(
+        py: Python<'py>,
+        tool: &str,
+    ) -> PyResult<Bound<'py, PyAny>> {
         let cfg = match tool {
             "browser" => ToolNamespaceConfig::browser(),
             "python" => ToolNamespaceConfig::python(),
@@ -426,8 +429,7 @@ fn openai_harmony(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
         let json_str = serde_json::to_string(&py_cfg)
             .map_err(|e| PyErr::new::<HarmonyError, _>(e.to_string()))?;
         let json_mod = PyModule::import(py, "json")?;
-        let py_obj = json_mod.call_method1("loads", (json_str,))?;
-        Ok(py_obj.into())
+        json_mod.call_method1("loads", (json_str,))
     }
     m.add_function(pyo3::wrap_pyfunction!(get_tool_namespace_config, m)?)?;
 

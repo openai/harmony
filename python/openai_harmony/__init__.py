@@ -29,7 +29,7 @@ from typing import (
 )
 
 import re
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, SerializeAsAny
 
 # Re-export the low-level Rust bindings under a private name so that we can
 # keep the *public* namespace clean and purely Pythonic.
@@ -288,7 +288,7 @@ class DeveloperContent(Content):
 
 class Message(BaseModel):
     author: Author
-    content: List[Content] = Field(default_factory=list)
+    content: List[SerializeAsAny[Content]] = Field(default_factory=list)
     channel: Optional[str] = None
     recipient: Optional[str] = None
     content_type: Optional[str] = None

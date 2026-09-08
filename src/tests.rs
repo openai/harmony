@@ -10,7 +10,9 @@ use crate::{
     HarmonyEncodingName, ParseOptions, StreamableParser,
 };
 use pretty_assertions::{assert_eq, Comparison};
+use rustc_hash::FxHashMap;
 use serde_json::json;
+use std::time::{Duration, Instant};
 
 fn parse_tokens(text: impl AsRef<str>) -> Vec<Rank> {
     text.as_ref()
@@ -32,6 +34,39 @@ fn load_test_data(path: impl AsRef<Path>) -> String {
 }
 
 const ENCODINGS: [HarmonyEncodingName; 1] = [HarmonyEncodingName::HarmonyGptOss];
+
+#[test]
+fn test_byte_pair_encode_handles_long_piece_efficiently() {
+    let mut ranks = FxHashMap::default();
+    ranks.insert(b"a".to_vec(), 1);
+    ranks.insert(b"aa".to_vec(), 0);
+    let piece = vec![b'a'; 32 * 1024];
+
+    let started = Instant::now();
+    let tokens = crate::tiktoken::byte_pair_encode(&piece, &ranks);
+
+    assert_eq!(tokens.len(), piece.len() / 2);
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "encoding a long repeated piece took {:?}",
+        started.elapsed()
+    );
+}
+
+#[test]
+fn test_byte_pair_encode_preserves_merge_priority() {
+    let mut ranks = FxHashMap::default();
+    ranks.insert(b"a".to_vec(), 10);
+    ranks.insert(b"b".to_vec(), 11);
+    ranks.insert(b"c".to_vec(), 12);
+    ranks.insert(b"d".to_vec(), 13);
+    ranks.insert(b"ab".to_vec(), 5);
+    ranks.insert(b"bc".to_vec(), 1);
+    ranks.insert(b"cd".to_vec(), 3);
+    ranks.insert(b"abc".to_vec(), 2);
+
+    assert_eq!(crate::tiktoken::byte_pair_encode(b"abcd", &ranks), [2, 13]);
+}
 
 #[test]
 fn test_simple_convo() {

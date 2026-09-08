@@ -1,5 +1,6 @@
 use std::borrow::Borrow;
-use std::collections::HashSet;
+use std::cmp::Reverse;
+use std::collections::{BinaryHeap, HashSet};
 use std::num::NonZeroU64;
 use std::thread;
 
@@ -9,61 +10,84 @@ use rustc_hash::FxHashMap as HashMap;
 pub type Rank = u32;
 
 fn _byte_pair_merge(ranks: &HashMap<Vec<u8>, Rank>, piece: &[u8]) -> Vec<(usize, Rank)> {
-    // This is a vector of (start, rank).
-    // The rank is of the pair starting at position start.
-    let mut parts = Vec::with_capacity(piece.len() + 1);
-
-    // Note that we hash bytes when indexing into `ranks`, not token pairs. As long as we train BPE
-    // the way we currently do, this is equivalent. An easy way to break this would be to decouple
-    // merge priority from token index or to prevent specific token merges.
-    let mut min_rank: (Rank, usize) = (Rank::MAX, usize::MAX);
-    for i in 0..piece.len() - 1 {
-        let rank = *ranks.get(&piece[i..i + 2]).unwrap_or(&Rank::MAX);
-        if rank < min_rank.0 {
-            min_rank = (rank, i);
-        }
-        parts.push((i, rank));
+    #[derive(Clone, Copy)]
+    struct Part {
+        start: usize,
+        rank: Rank,
+        prev: Option<usize>,
+        next: Option<usize>,
+        active: bool,
     }
-    parts.push((piece.len() - 1, Rank::MAX));
-    parts.push((piece.len(), Rank::MAX));
 
-    let get_rank = {
-        #[inline(always)]
-        |parts: &Vec<(usize, Rank)>, i: usize| {
-            if (i + 3) < parts.len() {
-                // Similar to `piece[i..i + 2]` above. The +3 is because we haven't yet deleted
-                // parts[i + 1], see comment in the main loop.
-                *ranks
-                    .get(&piece[parts[i].0..parts[i + 3].0])
-                    .unwrap_or(&Rank::MAX)
-            } else {
-                Rank::MAX
-            }
-        }
+    // Keep the parts in a linked list so removing a merged part does not shift every
+    // subsequent part. The heap entry's start offset preserves the reference
+    // implementation's left-to-right tie-breaking for equal ranks.
+    let mut parts: Vec<Part> = (0..=piece.len())
+        .map(|start| Part {
+            start,
+            rank: Rank::MAX,
+            prev: start.checked_sub(1),
+            next: (start < piece.len()).then_some(start + 1),
+            active: true,
+        })
+        .collect();
+
+    let get_rank = |parts: &[Part], i: usize| {
+        let Some(next) = parts[i].next else {
+            return Rank::MAX;
+        };
+        let Some(end) = parts[next].next else {
+            return Rank::MAX;
+        };
+        *ranks
+            .get(&piece[parts[i].start..parts[end].start])
+            .unwrap_or(&Rank::MAX)
     };
 
-    // If you have n parts and m merges, this does O(mn) work.
-    // We could do something with a heap and do O(m log n) work.
-    // n is often very small so considerations like cache-locality outweigh the algorithmic
-    // complexity downsides of the `parts` vector.
-    while min_rank.0 != Rank::MAX {
-        let i = min_rank.1;
-        // Update parts[i] and parts[i - 1] before removing parts[i + 1], since
-        // `parts.remove(i + 1)` will thrash the cache.
-        if i > 0 {
-            parts[i - 1].1 = get_rank(&parts, i - 1);
-        }
-        parts[i].1 = get_rank(&parts, i);
-        parts.remove(i + 1);
-
-        min_rank = (Rank::MAX, usize::MAX);
-        for (i, &(_, rank)) in parts[..parts.len() - 1].iter().enumerate() {
-            if rank < min_rank.0 {
-                min_rank = (rank, i);
-            }
+    let mut merge_queue = BinaryHeap::new();
+    for i in 0..piece.len().saturating_sub(1) {
+        parts[i].rank = *ranks.get(&piece[i..i + 2]).unwrap_or(&Rank::MAX);
+        if parts[i].rank != Rank::MAX {
+            merge_queue.push((Reverse(parts[i].rank), Reverse(parts[i].start), i));
         }
     }
-    parts
+
+    while let Some((Reverse(rank), Reverse(_start), left)) = merge_queue.pop() {
+        if !parts[left].active || parts[left].rank != rank {
+            continue;
+        }
+        let Some(right) = parts[left].next else {
+            continue;
+        };
+
+        // Merging left and right removes right from the linked list. Only the
+        // candidate beginning at left and its predecessor can have changed.
+        let next = parts[right].next;
+        parts[left].next = next;
+        if let Some(next) = next {
+            parts[next].prev = Some(left);
+        }
+        parts[right].active = false;
+
+        if let Some(prev) = parts[left].prev {
+            parts[prev].rank = get_rank(&parts, prev);
+            if parts[prev].rank != Rank::MAX {
+                merge_queue.push((Reverse(parts[prev].rank), Reverse(parts[prev].start), prev));
+            }
+        }
+        parts[left].rank = get_rank(&parts, left);
+        if parts[left].rank != Rank::MAX {
+            merge_queue.push((Reverse(parts[left].rank), Reverse(parts[left].start), left));
+        }
+    }
+
+    let mut result = Vec::with_capacity(piece.len() + 1);
+    let mut current = Some(0);
+    while let Some(i) = current {
+        result.push((parts[i].start, parts[i].rank));
+        current = parts[i].next;
+    }
+    result
 }
 
 pub fn byte_pair_encode(piece: &[u8], ranks: &HashMap<Vec<u8>, Rank>) -> Vec<Rank> {

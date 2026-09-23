@@ -390,6 +390,23 @@ where
     load_tiktoken_vocab(reader, expected_hash)
 }
 
+fn build_core_bpe<S, TS>(
+    encoder: HashMap<Vec<u8>, Rank>,
+    special_tokens: S,
+    pattern: &str,
+) -> Result<CoreBPE, LoadError>
+where
+    S: IntoIterator<Item = (TS, Rank)>,
+    TS: Into<String>,
+{
+    CoreBPE::new(
+        encoder,
+        special_tokens.into_iter().map(|(k, v)| (k.into(), v)),
+        pattern,
+    )
+    .map_err(LoadError::CoreBPECreationFailed)
+}
+
 pub fn load_encoding_from_file<P, S, TS>(
     file_path: P,
     expected_hash: Option<&str>,
@@ -403,12 +420,33 @@ where
 {
     let encoder = load_tiktoken_vocab_file(file_path, expected_hash)
         .map_err(LoadError::InvalidTiktokenVocabFile)?;
-    CoreBPE::new(
-        encoder,
-        special_tokens.into_iter().map(|(k, v)| (k.into(), v)),
-        pattern,
-    )
-    .map_err(LoadError::CoreBPECreationFailed)
+    build_core_bpe(encoder, special_tokens, pattern)
+}
+
+/// Same as [`load_encoding_from_file`], but reads the vocabulary from memory.
+///
+/// The wasm32 loader has always called this -- there is no filesystem to read
+/// on that target -- but it was never defined, which is part of why wasm32 has
+/// not compiled.
+///
+/// Gated to wasm32 because `public_encodings` is a private module, so an
+/// unreachable `pub fn` trips `dead_code` under `-D warnings` on other targets.
+/// Loading a vocabulary you already hold is useful off wasm32 too (an embedded
+/// or air-gapped copy, cf. #101); exposing it there is a separate API decision.
+#[cfg(target_arch = "wasm32")]
+pub fn load_encoding_from_bytes<S, TS>(
+    vocab_bytes: &[u8],
+    expected_hash: Option<&str>,
+    special_tokens: S,
+    pattern: &str,
+) -> Result<CoreBPE, LoadError>
+where
+    S: IntoIterator<Item = (TS, Rank)>,
+    TS: Into<String>,
+{
+    let encoder = load_tiktoken_vocab(vocab_bytes, expected_hash)
+        .map_err(LoadError::InvalidTiktokenVocabFile)?;
+    build_core_bpe(encoder, special_tokens, pattern)
 }
 
 /// This returns the path to a file containing the data at `url`. If the file is

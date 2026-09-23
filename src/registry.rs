@@ -41,42 +41,61 @@ impl std::fmt::Debug for HarmonyEncodingName {
     }
 }
 
+/// Build the encoding around an already-loaded tokenizer.
+///
+/// The native and wasm32 loaders differ only in how they obtain the tokenizer
+/// (blocking vs async), so everything else lives here. Keeping two copies of
+/// this struct literal is what let the wasm32 branch drift: it went on setting
+/// a `conversation_has_function_tools` field for a year after d00ac3d removed
+/// it from `HarmonyEncoding`, and nothing built wasm32 to notice.
+fn build_harmony_encoding(
+    name: HarmonyEncodingName,
+    tokenizer: crate::tiktoken::CoreBPE,
+    tokenizer_name: String,
+) -> HarmonyEncoding {
+    let n_ctx = 1_048_576; // 2^20
+    let max_action_length = 524_288; // 2^19
+    HarmonyEncoding {
+        name: name.to_string(),
+        n_ctx,
+        tokenizer: Arc::new(tokenizer),
+        tokenizer_name,
+        max_message_tokens: n_ctx - max_action_length,
+        max_action_length,
+        format_token_mapping: make_mapping([
+            (FormattingToken::Start, "<|start|>"),
+            (FormattingToken::Message, "<|message|>"),
+            (FormattingToken::EndMessage, "<|end|>"),
+            (FormattingToken::EndMessageDoneSampling, "<|return|>"),
+            (FormattingToken::Refusal, "<|refusal|>"),
+            (FormattingToken::ConstrainedFormat, "<|constrain|>"),
+            (FormattingToken::Channel, "<|channel|>"),
+            (FormattingToken::EndMessageAssistantToTool, "<|call|>"),
+            (FormattingToken::BeginUntrusted, "<|untrusted|>"),
+            (FormattingToken::EndUntrusted, "<|end_untrusted|>"),
+        ]),
+        stop_formatting_tokens: HashSet::from([
+            FormattingToken::EndMessageDoneSampling,
+            FormattingToken::EndMessageAssistantToTool,
+            FormattingToken::EndMessage,
+        ]),
+        stop_formatting_tokens_for_assistant_actions: HashSet::from([
+            FormattingToken::EndMessageDoneSampling,
+            FormattingToken::EndMessageAssistantToTool,
+        ]),
+    }
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 pub fn load_harmony_encoding(name: HarmonyEncodingName) -> anyhow::Result<HarmonyEncoding> {
     match name {
         HarmonyEncodingName::HarmonyGptOss => {
-            let n_ctx = 1_048_576; // 2^20
-            let max_action_length = 524_288; // 2^19
             let encoding_ext = tiktoken_ext::Encoding::O200kHarmony;
-            Ok(HarmonyEncoding {
-                name: name.to_string(),
-                n_ctx,
-                tokenizer: Arc::new(encoding_ext.load()?),
-                tokenizer_name: encoding_ext.name().to_owned(),
-                max_message_tokens: n_ctx - max_action_length,
-                max_action_length,
-                format_token_mapping: make_mapping([
-                    (FormattingToken::Start, "<|start|>"),
-                    (FormattingToken::Message, "<|message|>"),
-                    (FormattingToken::EndMessage, "<|end|>"),
-                    (FormattingToken::EndMessageDoneSampling, "<|return|>"),
-                    (FormattingToken::Refusal, "<|refusal|>"),
-                    (FormattingToken::ConstrainedFormat, "<|constrain|>"),
-                    (FormattingToken::Channel, "<|channel|>"),
-                    (FormattingToken::EndMessageAssistantToTool, "<|call|>"),
-                    (FormattingToken::BeginUntrusted, "<|untrusted|>"),
-                    (FormattingToken::EndUntrusted, "<|end_untrusted|>"),
-                ]),
-                stop_formatting_tokens: HashSet::from([
-                    FormattingToken::EndMessageDoneSampling,
-                    FormattingToken::EndMessageAssistantToTool,
-                    FormattingToken::EndMessage,
-                ]),
-                stop_formatting_tokens_for_assistant_actions: HashSet::from([
-                    FormattingToken::EndMessageDoneSampling,
-                    FormattingToken::EndMessageAssistantToTool,
-                ]),
-            })
+            Ok(build_harmony_encoding(
+                name,
+                encoding_ext.load()?,
+                encoding_ext.name().to_owned(),
+            ))
         }
     }
 }
@@ -85,39 +104,12 @@ pub fn load_harmony_encoding(name: HarmonyEncodingName) -> anyhow::Result<Harmon
 pub async fn load_harmony_encoding(name: HarmonyEncodingName) -> anyhow::Result<HarmonyEncoding> {
     match name {
         HarmonyEncodingName::HarmonyGptOss => {
-            let n_ctx = 1_048_576; // 2^20
-            let max_action_length = 524_288; // 2^19
             let encoding_ext = tiktoken_ext::Encoding::O200kHarmony;
-            Ok(HarmonyEncoding {
-                name: name.to_string(),
-                n_ctx,
-                tokenizer: Arc::new(encoding_ext.load().await?),
-                tokenizer_name: encoding_ext.name().to_owned(),
-                max_message_tokens: n_ctx - max_action_length,
-                max_action_length,
-                format_token_mapping: make_mapping([
-                    (FormattingToken::Start, "<|start|>"),
-                    (FormattingToken::Message, "<|message|>"),
-                    (FormattingToken::EndMessage, "<|end|>"),
-                    (FormattingToken::EndMessageDoneSampling, "<|return|>"),
-                    (FormattingToken::Refusal, "<|refusal|>"),
-                    (FormattingToken::ConstrainedFormat, "<|constrain|>"),
-                    (FormattingToken::Channel, "<|channel|>"),
-                    (FormattingToken::EndMessageAssistantToTool, "<|call|>"),
-                    (FormattingToken::BeginUntrusted, "<|untrusted|>"),
-                    (FormattingToken::EndUntrusted, "<|end_untrusted|>"),
-                ]),
-                stop_formatting_tokens: HashSet::from([
-                    FormattingToken::EndMessageDoneSampling,
-                    FormattingToken::EndMessageAssistantToTool,
-                    FormattingToken::EndMessage,
-                ]),
-                stop_formatting_tokens_for_assistant_actions: HashSet::from([
-                    FormattingToken::EndMessageDoneSampling,
-                    FormattingToken::EndMessageAssistantToTool,
-                ]),
-                conversation_has_function_tools: Arc::new(AtomicBool::new(false)),
-            })
+            Ok(build_harmony_encoding(
+                name,
+                encoding_ext.load().await?,
+                encoding_ext.name().to_owned(),
+            ))
         }
     }
 }

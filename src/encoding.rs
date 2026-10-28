@@ -1063,6 +1063,9 @@ pub struct StreamableParser {
     undecoded_tokens: Vec<Rank>,
     undecoded_bytes: Vec<u8>,
     options: ParseOptions,
+    retain_history: bool,
+    completed_messages: usize,
+    last_completion_delta: Option<String>,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -1110,13 +1113,94 @@ impl StreamableParser {
             undecoded_tokens: Vec::new(),
             undecoded_bytes: Vec::new(),
             options,
+            retain_history: true,
+            completed_messages: 0,
+            last_completion_delta: None,
         })
     }
 
-    /// Consume a single token and update the internal state.
+    /// Keep incremental deltas and parsing state without retaining token or message history.
+    ///
+    /// Existing history is released, including the current message's decoded body.
+    /// Header metadata and incomplete UTF-8 remain live so parsing can continue.
+    /// [`Self::tokens`] and [`Self::messages`] are empty in this mode, and
+    /// [`Self::current_content`] returns an error. Use [`Self::message_count`] to
+    /// detect completed messages, [`Self::last_content_delta`] for body text,
+    /// and [`Self::last_completion_delta`] for text finalized at a boundary.
+    pub fn without_history(mut self) -> Self {
+        self.discard_history();
+        self
+    }
+
+    /// Release retained history in place without changing the parsing boundary.
+    pub fn discard_history(&mut self) {
+        self.retain_history = false;
+        self.tokens = Vec::new();
+        self.messages = Vec::new();
+        if let StreamState::Content { content_tokens, .. } = &mut self.state {
+            *content_tokens = Vec::new();
+        }
+    }
+
+    /// Fork an independent delta-only parser at the current continuation boundary.
+    ///
+    /// Consumed body/token/message history is neither copied nor replayed. Header
+    /// metadata and pending decoding state are copied; an unfinished header can
+    /// therefore still determine the cost of a fork. The last emitted delta is
+    /// cleared so a caller cannot emit consumed text twice. This does not reset
+    /// the grammar or completed-message count.
+    pub fn fork_continuation(&self) -> Self {
+        let state = match &self.state {
+            StreamState::ExpectStart => StreamState::ExpectStart,
+            StreamState::Header { header_tokens } => StreamState::Header {
+                header_tokens: header_tokens.clone(),
+            },
+            StreamState::Content { header, .. } => StreamState::Content {
+                header: header.clone(),
+                content_tokens: Vec::new(),
+            },
+        };
+        Self {
+            encoding: self.encoding.clone(),
+            next_role: self.next_role.clone(),
+            tokens: Vec::new(),
+            messages: Vec::new(),
+            state,
+            stop_tokens: self.stop_tokens.clone(),
+            last_content_delta: None,
+            undecoded_tokens: self.undecoded_tokens.clone(),
+            undecoded_bytes: self.undecoded_bytes.clone(),
+            options: self.options,
+            retain_history: false,
+            completed_messages: self.completed_messages,
+            last_completion_delta: None,
+        }
+    }
+
+    /// Whether full token, message, and current-body history is retained.
+    pub fn retains_history(&self) -> bool {
+        self.retain_history
+    }
+
+    /// Number of completed messages, including messages whose history was omitted.
+    pub fn message_count(&self) -> usize {
+        self.completed_messages
+    }
+
+    /// Text finalized only at the latest message boundary in delta-only mode.
+    ///
+    /// This exposes pending UTF-8 replacement and permissive-header recovery that
+    /// full-history mode includes in its completed message instead. Consume it in
+    /// addition to the ordinary content delta. It is cleared on the next process
+    /// call and never contains already-emitted body text.
+    pub fn last_completion_delta(&self) -> Option<&str> {
+        self.last_completion_delta.as_deref()
+    }
+
     /// Consume a single token and update the internal state.
     fn process_next(&mut self, token: Option<Rank>) -> anyhow::Result<&mut Self> {
-        if let Some(token) = token {
+        self.last_completion_delta = None;
+        if let Some(token) = token.filter(|_| self.retain_history) {
             self.tokens.push(token);
         }
         // Clone next_role up front to avoid borrow checker issues
@@ -1179,14 +1263,19 @@ impl StreamableParser {
 
                                 // Use remaining content if present, otherwise empty string
                                 let text = remaining_content.unwrap_or_default();
-                                let message = Message {
-                                    author: header.author.clone(),
-                                    recipient: header.recipient.clone(),
-                                    channel: header.channel.clone(),
-                                    content_type: header.content_type.clone(),
-                                    content: vec![Content::Text(TextContent { text })],
-                                };
-                                self.messages.push(message);
+                                if self.retain_history {
+                                    let message = Message {
+                                        author: header.author.clone(),
+                                        recipient: header.recipient.clone(),
+                                        channel: header.channel.clone(),
+                                        content_type: header.content_type.clone(),
+                                        content: vec![Content::Text(TextContent { text })],
+                                    };
+                                    self.messages.push(message);
+                                } else if !text.is_empty() {
+                                    self.last_completion_delta = Some(text);
+                                }
+                                self.completed_messages += 1;
                             }
                         }
                         // Transition to ExpectStart to wait for the next message
@@ -1224,8 +1313,10 @@ impl StreamableParser {
                                 self.undecoded_bytes.extend(decoded_bytes.iter().copied());
                                 match String::from_utf8(self.undecoded_bytes.clone()) {
                                     Ok(decoded_str) => {
-                                        self.encoding
-                                            .render_text_into(&decoded_str, content_tokens)?;
+                                        if self.retain_history {
+                                            self.encoding
+                                                .render_text_into(&decoded_str, content_tokens)?;
+                                        }
                                         self.last_content_delta = Some(decoded_str);
                                         self.undecoded_bytes.clear();
                                     }
@@ -1241,18 +1332,22 @@ impl StreamableParser {
                                                 decoded_bytes[..valid_len].to_vec(),
                                             )
                                             .unwrap();
-                                            self.encoding
-                                                .render_text_into(&valid_str, content_tokens)?;
+                                            if self.retain_history {
+                                                self.encoding
+                                                    .render_text_into(&valid_str, content_tokens)?;
+                                            }
                                             content_delta.push_str(&valid_str);
                                             self.undecoded_bytes.drain(..valid_len);
                                         }
 
                                         match utf8_error.error_len() {
                                             Some(error_len) => {
-                                                self.encoding.render_text_into(
-                                                    REPLACEMENT,
-                                                    content_tokens,
-                                                )?;
+                                                if self.retain_history {
+                                                    self.encoding.render_text_into(
+                                                        REPLACEMENT,
+                                                        content_tokens,
+                                                    )?;
+                                                }
                                                 content_delta.push_str(REPLACEMENT);
                                                 self.undecoded_bytes.drain(..error_len);
                                             }
@@ -1282,9 +1377,7 @@ impl StreamableParser {
                     true
                 };
                 if is_eos {
-                    // Our rendered content tokens are valid utf-8, so we can decode them directly
-                    let content_text = self.encoding.tokenizer().decode_utf8(content_tokens)?;
-                    // Decode any remaining undecoded tokens, replacing any invalid tokens with the replacement character
+                    // Pending bytes are not part of an earlier incremental delta.
                     let tokens_text = match self
                         .encoding
                         .tokenizer()
@@ -1293,17 +1386,26 @@ impl StreamableParser {
                         Ok(text) => text,
                         Err(_) => REPLACEMENT.to_string(),
                     };
-                    // Decode any remaining undecoded bytes, replacing any invalid bytes with the replacement character
                     let bytes_text = String::from_utf8_lossy(&self.undecoded_bytes);
-                    let text = content_text + &tokens_text + &bytes_text;
-                    let message = Message {
-                        author: header.author.clone(),
-                        recipient: header.recipient.clone(),
-                        channel: header.channel.clone(),
-                        content_type: header.content_type.clone(),
-                        content: vec![Content::Text(TextContent { text })],
-                    };
-                    self.messages.push(message);
+                    if self.retain_history {
+                        // Our rendered content tokens are valid utf-8, so we can decode them directly
+                        let content_text = self.encoding.tokenizer().decode_utf8(content_tokens)?;
+                        let text = content_text + &tokens_text + &bytes_text;
+                        let message = Message {
+                            author: header.author.clone(),
+                            recipient: header.recipient.clone(),
+                            channel: header.channel.clone(),
+                            content_type: header.content_type.clone(),
+                            content: vec![Content::Text(TextContent { text })],
+                        };
+                        self.messages.push(message);
+                    } else {
+                        let text = tokens_text + &bytes_text;
+                        if !text.is_empty() {
+                            self.last_completion_delta = Some(text);
+                        }
+                    }
+                    self.completed_messages += 1;
                     self.state = StreamState::ExpectStart;
                     self.last_content_delta = None;
                     self.undecoded_tokens.clear();
@@ -1496,6 +1598,9 @@ impl StreamableParser {
 
     /// Return the textual content of the current message so far.
     pub fn current_content(&self) -> anyhow::Result<String> {
+        if !self.retain_history {
+            anyhow::bail!("current content history is not retained in delta-only mode");
+        }
         match &self.state {
             StreamState::Content { content_tokens, .. } => self
                 .encoding

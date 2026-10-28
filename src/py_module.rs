@@ -306,6 +306,7 @@ impl PyStreamableParser {
         encoding: &PyHarmonyEncoding,
         role: Option<&str>,
         strict: Option<bool>,
+        retain_history: Option<bool>,
     ) -> PyResult<Self> {
         let parsed_role = role
             .map(|r| {
@@ -320,7 +321,37 @@ impl PyStreamableParser {
         let inner =
             StreamableParser::new_with_options(encoding.inner.clone(), parsed_role, options)
                 .map_err(|e| PyErr::new::<HarmonyError, _>(e.to_string()))?;
+        let inner = if retain_history.unwrap_or(true) {
+            inner
+        } else {
+            inner.without_history()
+        };
         Ok(Self { inner })
+    }
+
+    fn discard_history(&mut self) {
+        self.inner.discard_history();
+    }
+
+    fn fork_continuation(&self) -> Self {
+        Self {
+            inner: self.inner.fork_continuation(),
+        }
+    }
+
+    #[getter]
+    fn retains_history(&self) -> bool {
+        self.inner.retains_history()
+    }
+
+    #[getter]
+    fn message_count(&self) -> usize {
+        self.inner.message_count()
+    }
+
+    #[getter]
+    fn last_completion_delta(&self) -> Option<String> {
+        self.inner.last_completion_delta().map(str::to_owned)
     }
 
     fn process(&mut self, token: u32) -> PyResult<()> {

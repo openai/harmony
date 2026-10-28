@@ -621,7 +621,14 @@ class StreamState(Enum):
 
 
 class StreamableParser:
-    """Incremental parser over completion tokens."""
+    """Incremental parser over completion tokens.
+
+    Set ``retain_history=False`` to retain only grammar and pending decoding state.
+    In that mode, consume ``last_content_delta``, ``last_completion_delta`` and
+    ``message_count``; token and message history are empty and ``current_content``
+    is unavailable. Completion deltas include pending UTF-8 replacement and text
+    recovered from permissive headers at a message boundary.
+    """
 
     def __init__(
         self,
@@ -629,9 +636,34 @@ class StreamableParser:
         role: Role | None,
         *,
         strict: bool = True,
+        retain_history: bool = True,
     ) -> None:
         role_str = str(role.value) if role is not None else None
-        self._inner = _PyStreamableParser(encoding._inner, role_str, strict)
+        self._inner = _PyStreamableParser(
+            encoding._inner, role_str, strict, retain_history
+        )
+
+    def discard_history(self) -> None:
+        """Release accumulated history while preserving the parsing boundary."""
+        self._inner.discard_history()
+
+    def fork_continuation(self) -> "StreamableParser":
+        """Fork delta-only state without copying or replaying consumed body history."""
+        fork = StreamableParser.__new__(StreamableParser)
+        fork._inner = self._inner.fork_continuation()
+        return fork
+
+    @property
+    def retains_history(self) -> bool:
+        return self._inner.retains_history
+
+    @property
+    def message_count(self) -> int:
+        return self._inner.message_count
+
+    @property
+    def last_completion_delta(self) -> Optional[str]:
+        return self._inner.last_completion_delta
 
     def process(self, token: int) -> "StreamableParser":
         self._inner.process(token)

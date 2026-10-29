@@ -98,6 +98,10 @@ Important methods:
 
 Incremental parser that consumes tokens one by one. Create with `StreamableParser::new(encoding, role)` and feed tokens via `process`. Access information via getters like `current_content`, `current_role`, `messages`, `tokens` and `state_json`. Use `StreamableParser::new_with_options(encoding, role, options)` when you need to override defaults such as `ParseOptions { strict: false }`.
 
+Use `.without_history()` at construction, or `discard_history()` in place, when the consumer needs deltas rather than accumulated messages. In this mode `tokens()` and `messages()` stay empty and `current_content()` returns an error. Read `message_count()` for completion boundaries, and consume both `last_content_delta()` and `last_completion_delta()` after each process call; the latter contains text finalized at a boundary, including incomplete UTF-8 replacement and permissive-header recovery. These deltas are cleared by the next process call.
+
+`fork_continuation()` creates an independent delta-only parser at the same boundary without copying or replaying consumed body history. It preserves parsing options, header metadata, pending decoding state, and the completed-message count, and clears the last emitted deltas. Unfinished headers and pending undecodable input still contribute to fork cost. The default parser continues to retain full history.
+
 ## registry module
 
 ### `load_harmony_encoding`

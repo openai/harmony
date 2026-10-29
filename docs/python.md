@@ -116,6 +116,10 @@ Use `strict=False` when you need the parser to recover from malformed model outp
 ### `StreamableParser`
 Incremental parser built on top of an encoding. Construct with `StreamableParser(encoding, role)` and feed tokens via `process(token)`.  Inspect state via properties like `current_content`, `current_role`, `tokens` and `state`. Pass `strict=False` to enable permissive parsing (mirrors `ParseOptions { strict: false }` on the Rust side).
 
+Pass `retain_history=False`, or call `discard_history()`, to retain parsing state and deltas without accumulating body, token, or message history. `tokens` and `messages` are empty in this mode and `current_content` raises an error. Read `message_count` for completion boundaries. After each process call consume both `last_content_delta` and `last_completion_delta`; completion text includes pending UTF-8 replacement and permissive-header recovery. The next process call clears these deltas.
+
+`fork_continuation()` creates an independent delta-only parser without copying or replaying consumed body history. It preserves options, header metadata, pending decoding, and the completed-message count, and clears prior emitted deltas. Unfinished headers and pending undecodable input still contribute to fork cost. Existing callers keep full-history behavior by default.
+
 ### `load_harmony_encoding(name)`
 Return a `HarmonyEncoding` by name.  Accepts either the string name or a value from the `HarmonyEncodingName` enum (`HARMONY_GPT_OSS`).
 

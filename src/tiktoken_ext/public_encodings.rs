@@ -1,9 +1,10 @@
 use std::{
     collections::HashMap,
     fs::File,
-    io::{BufReader, BufWriter, Read as _, Write as _},
+    io::{BufReader, BufWriter, Read, Write as _},
     path::{Path, PathBuf},
     sync::OnceLock,
+    time::{Duration, SystemTime},
 };
 
 use base64::{prelude::BASE64_STANDARD, Engine as _};
@@ -421,22 +422,19 @@ fn download_or_find_cached_file(
     let cache_dir = resolve_cache_dir()?;
     let cache_path = resolve_cache_path(&cache_dir, url);
     if cache_path.exists() {
-        if verify_file_hash(&cache_path, expected_hash)? {
-            return Ok(cache_path);
-        }
-        let _ = std::fs::remove_file(&cache_path);
-    }
-    let hash = load_remote_file(url, &cache_path)?;
-    if let Some(expected_hash) = expected_hash {
-        if hash != expected_hash {
-            let _ = std::fs::remove_file(&cache_path);
-            return Err(RemoteVocabFileError::HashMismatch {
-                file_url: url.to_string(),
-                expected_hash: expected_hash.to_string(),
-                computed_hash: hash,
-            });
+        match verify_file_hash(&cache_path, expected_hash) {
+            Ok(true) => return Ok(cache_path),
+            // A partial file left by a writer that did not publish atomically.
+            // The download below replaces it in one rename, so nothing removes
+            // it first: removing it could take a peer's complete file instead.
+            Ok(false) => {}
+            // Gone between the check and the open: such a writer removed it.
+            Err(RemoteVocabFileError::IOError(_, ref e))
+                if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e),
         }
     }
+    load_remote_file(url, &cache_path, expected_hash)?;
     Ok(cache_path)
 }
 
@@ -503,39 +501,176 @@ fn verify_file_hash(
     Ok(computed_hash == expected_hash)
 }
 
-/// Loads a remote file to `destination` and returns the computed hash of the
-/// file contents.
+/// Downloads a remote file to `destination`, which another process may be
+/// reading or writing at the same time. See `write_file_atomically`.
 #[cfg(not(target_arch = "wasm32"))]
-fn load_remote_file(url: &str, destination: &Path) -> Result<String, RemoteVocabFileError> {
+fn load_remote_file(
+    url: &str,
+    destination: &Path,
+    expected_hash: Option<&str>,
+) -> Result<(), RemoteVocabFileError> {
     let client = reqwest::blocking::Client::new();
-    let mut response = client
+    let response = client
         .get(url)
         .send()
         .and_then(|r| r.error_for_status())
         .map_err(|e| RemoteVocabFileError::FailedToDownloadOrLoadVocabFile(Box::new(e)))?;
+    write_file_atomically(response, destination, url, expected_hash)
+}
 
-    let file = File::create(destination)
-        .map_err(|e| RemoteVocabFileError::IOError(format!("creating file {destination:?}"), e))?;
-    let mut dest = BufWriter::new(file);
-    let mut hasher = Sha256::new();
-    let mut buffer = [0u8; 8192];
-    loop {
-        let bytes_read = response.read(&mut buffer).map_err(|e| {
-            RemoteVocabFileError::IOError(format!("reading from response {url}"), e)
-        })?;
-        if bytes_read == 0 {
-            break;
+/// Streams `source` (read from `source_url`) into `destination` so that a
+/// concurrent reader sees either no file or a complete, verified one.
+///
+/// The cache directory is shared by every process on the host, so several
+/// processes that start with a cold cache download the same file at once.
+/// Writing in place let one of them read another's partial download
+/// ("invalid tiktoken vocab file: failed to parse rank"), or find the file
+/// gone after a peer removed it as a hash mismatch. The bytes now go to a
+/// temporary file unique to this process and call, in the destination's
+/// directory, which is renamed over `destination` only after it is complete,
+/// synced, and matches `expected_hash`. On any failure the temporary file is
+/// removed and `destination` is left as it was.
+///
+/// The temporary file is created exclusively under a name no live writer
+/// holds (`create_temp_file`), and a writer killed mid-download strands its
+/// temporary file, so each download first sweeps the stale ones
+/// (`remove_stale_temp_files`).
+#[cfg(not(target_arch = "wasm32"))]
+fn write_file_atomically(
+    mut source: impl Read,
+    destination: &Path,
+    source_url: &str,
+    expected_hash: Option<&str>,
+) -> Result<(), RemoteVocabFileError> {
+    remove_stale_temp_files(destination, SystemTime::now());
+    let (file, temp_path) = create_temp_file(destination).map_err(|e| {
+        RemoteVocabFileError::IOError(format!("creating a temporary file for {destination:?}"), e)
+    })?;
+
+    let mut write = |file: File| -> Result<(), RemoteVocabFileError> {
+        let mut dest = BufWriter::new(file);
+        let mut hasher = Sha256::new();
+        let mut buffer = [0u8; 8192];
+        loop {
+            let bytes_read = source.read(&mut buffer).map_err(|e| {
+                RemoteVocabFileError::IOError(format!("reading from response {source_url}"), e)
+            })?;
+            if bytes_read == 0 {
+                break;
+            }
+            dest.write_all(&buffer[..bytes_read]).map_err(|e| {
+                RemoteVocabFileError::IOError(format!("writing to file {temp_path:?}"), e)
+            })?;
+            hasher.update(&buffer[..bytes_read]);
         }
-        dest.write_all(&buffer[..bytes_read]).map_err(|e| {
-            RemoteVocabFileError::IOError(format!("writing to file {destination:?}"), e)
+        let file = dest.into_inner().map_err(|e| {
+            RemoteVocabFileError::IOError(format!("flushing file {temp_path:?}"), e.into_error())
         })?;
-        hasher.update(&buffer[..bytes_read]);
+        file.sync_all()
+            .map_err(|e| RemoteVocabFileError::IOError(format!("syncing file {temp_path:?}"), e))?;
+        let computed_hash = format!("{:x}", hasher.finalize());
+        if let Some(expected_hash) = expected_hash {
+            if computed_hash != expected_hash {
+                return Err(RemoteVocabFileError::HashMismatch {
+                    file_url: source_url.to_string(),
+                    expected_hash: expected_hash.to_string(),
+                    computed_hash,
+                });
+            }
+        }
+        std::fs::rename(&temp_path, destination).map_err(|e| {
+            RemoteVocabFileError::IOError(format!("renaming {temp_path:?} to {destination:?}"), e)
+        })
+    };
+    let result = write(file);
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temp_path);
     }
-    Ok(format!("{:x}", hasher.finalize()))
+    result
+}
+
+/// How many temporary names a download tries before giving up.
+#[cfg(not(target_arch = "wasm32"))]
+const TEMP_FILE_ATTEMPTS: u32 = 16;
+
+/// The temporary names a download of `destination` may use, in its
+/// directory: `<name>.<pid>.<n>.tmp`. The process id keeps concurrent
+/// processes apart and `n` keeps concurrent downloads in one process apart.
+#[cfg(not(target_arch = "wasm32"))]
+fn temp_file_candidates(destination: &Path) -> impl Iterator<Item = PathBuf> + '_ {
+    let name = destination.file_name().map(|name| name.to_os_string());
+    (0..TEMP_FILE_ATTEMPTS).filter_map(move |n| {
+        let mut temp_name = name.clone()?;
+        temp_name.push(format!(".{}.{n}.tmp", std::process::id()));
+        Some(destination.with_file_name(temp_name))
+    })
+}
+
+/// Creates the first free candidate name for a download of `destination`,
+/// exclusively: `create_new` refuses any existing entry, a link included,
+/// without following it. A taken name is skipped, never removed, because its
+/// owner can be live: a process with the same id in another pid namespace,
+/// or one on another host sharing the directory. Stranded names are left to
+/// `remove_stale_temp_files`.
+#[cfg(not(target_arch = "wasm32"))]
+fn create_temp_file(destination: &Path) -> std::io::Result<(File, PathBuf)> {
+    let mut taken = std::io::Error::new(
+        std::io::ErrorKind::InvalidInput,
+        format!("no file name to derive a temporary name from in {destination:?}"),
+    );
+    for temp_path in temp_file_candidates(destination) {
+        match File::options().write(true).create_new(true).open(&temp_path) {
+            Ok(file) => return Ok((file, temp_path)),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => taken = e,
+            Err(e) => return Err(e),
+        }
+    }
+    Err(taken)
+}
+
+/// A temporary download untouched for this long was stranded by a writer
+/// that died: a download writes continuously and completes in seconds.
+#[cfg(not(target_arch = "wasm32"))]
+const STALE_TEMP_FILE_AGE: Duration = Duration::from_secs(60 * 60);
+
+/// Removes the temporary downloads of `destination` that no writer has
+/// touched for `STALE_TEMP_FILE_AGE`, as of `now`. Nothing else sweeps the
+/// shared cache directory, so each download sweeps before it writes.
+#[cfg(not(target_arch = "wasm32"))]
+fn remove_stale_temp_files(destination: &Path, now: SystemTime) {
+    let (Some(dir), Some(name)) = (destination.parent(), destination.file_name()) else {
+        return;
+    };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let prefix = format!("{}.", name.to_string_lossy());
+    for entry in entries.flatten() {
+        let file_name = entry.file_name();
+        let Some(file_name) = file_name.to_str() else {
+            continue;
+        };
+        if !(file_name.starts_with(&prefix) && file_name.ends_with(".tmp")) {
+            continue;
+        }
+        let stale = entry
+            .metadata()
+            .and_then(|metadata| metadata.modified())
+            .ok()
+            .and_then(|modified| now.duration_since(modified).ok())
+            .is_some_and(|age| age >= STALE_TEMP_FILE_AGE);
+        if stale {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
 }
 
 #[cfg(target_arch = "wasm32")]
-fn load_remote_file(_url: &str, _destination: &Path) -> Result<String, RemoteVocabFileError> {
+fn load_remote_file(
+    _url: &str,
+    _destination: &Path,
+    _expected_hash: Option<&str>,
+) -> Result<(), RemoteVocabFileError> {
     Err(RemoteVocabFileError::FailedToDownloadOrLoadVocabFile(
         Box::new(std::io::Error::new(
             std::io::ErrorKind::Other,
@@ -565,11 +700,222 @@ async fn load_remote_file_bytes(url: &str) -> Result<Vec<u8>, RemoteVocabFileErr
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::Ordering;
 
     #[test]
     fn test_load_encodings() {
         for encoding in Encoding::all() {
             let _ = encoding.load().unwrap();
         }
+    }
+    /// A reader that yields `data` and then fails, like a dropped download.
+    struct FailingReader<'a> {
+        data: &'a [u8],
+    }
+
+    impl Read for FailingReader<'_> {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            if self.data.is_empty() {
+                return Err(std::io::ErrorKind::ConnectionReset.into());
+            }
+            let n = self.data.len().min(buf.len());
+            buf[..n].copy_from_slice(&self.data[..n]);
+            self.data = &self.data[n..];
+            Ok(n)
+        }
+    }
+
+    fn scratch_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "harmony-write-atomically-{name}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn entries(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        names.sort();
+        names
+    }
+
+    fn sha256_hex(bytes: &[u8]) -> String {
+        format!("{:x}", Sha256::digest(bytes))
+    }
+
+    #[test]
+    fn write_file_atomically_publishes_only_complete_verified_files() {
+        let dir = scratch_dir("complete");
+        let destination = dir.join("vocab");
+        let body = b"rank data\n".repeat(4096);
+
+        write_file_atomically(
+            &body[..],
+            &destination,
+            "test://vocab",
+            Some(&sha256_hex(&body)),
+        )
+        .unwrap();
+        assert_eq!(std::fs::read(&destination).unwrap(), body);
+        assert_eq!(entries(&dir), vec!["vocab".to_string()]);
+
+        // A download that dies part way leaves the published file untouched
+        // and no temporary file behind.
+        let truncated = FailingReader {
+            data: &body[..1000],
+        };
+        assert!(write_file_atomically(truncated, &destination, "test://vocab", None).is_err());
+        assert_eq!(std::fs::read(&destination).unwrap(), body);
+        assert_eq!(entries(&dir), vec!["vocab".to_string()]);
+
+        // So does one whose bytes do not match the expected hash.
+        let err = write_file_atomically(
+            &b"wrong"[..],
+            &destination,
+            "test://vocab",
+            Some(&sha256_hex(&body)),
+        )
+        .unwrap_err();
+        assert!(matches!(err, RemoteVocabFileError::HashMismatch { .. }));
+        assert_eq!(std::fs::read(&destination).unwrap(), body);
+        assert_eq!(entries(&dir), vec!["vocab".to_string()]);
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn write_file_atomically_never_exposes_a_partial_file() {
+        let dir = scratch_dir("cold");
+        let destination = dir.join("vocab");
+        let body = b"rank data\n".repeat(4096);
+
+        let truncated = FailingReader {
+            data: &body[..1000],
+        };
+        assert!(write_file_atomically(truncated, &destination, "test://vocab", None).is_err());
+        assert!(!destination.exists());
+        assert!(entries(&dir).is_empty());
+
+        // Concurrent writers of the same destination each publish a complete
+        // file, and a reader polling the destination meanwhile only ever
+        // finds no file or the whole of it. The barrier has the reader
+        // polling before any writer starts, and the guard ends its polling
+        // even when a writer panics, so a writer error fails the test rather
+        // than leaving the scope waiting on the reader.
+        struct StopOnDrop<'a>(&'a std::sync::atomic::AtomicBool);
+        impl Drop for StopOnDrop<'_> {
+            fn drop(&mut self) {
+                self.0.store(false, Ordering::Release);
+            }
+        }
+        const WRITERS: usize = 4;
+        let large = b"rank data\n".repeat(1 << 18);
+        let writing = std::sync::atomic::AtomicBool::new(true);
+        let start = std::sync::Barrier::new(WRITERS + 1);
+        let complete_reads = std::thread::scope(|scope| {
+            let reader = scope.spawn(|| {
+                start.wait();
+                let mut complete_reads = 0;
+                while writing.load(Ordering::Acquire) {
+                    match std::fs::read(&destination) {
+                        Ok(read) => {
+                            assert!(read == large, "read {} bytes", read.len());
+                            complete_reads += 1;
+                        }
+                        Err(e) => assert_eq!(e.kind(), std::io::ErrorKind::NotFound),
+                    }
+                }
+                complete_reads
+            });
+            let stop = StopOnDrop(&writing);
+            let writers: Vec<_> = (0..WRITERS)
+                .map(|_| {
+                    scope.spawn(|| {
+                        start.wait();
+                        for _ in 0..8 {
+                            write_file_atomically(&large[..], &destination, "test://vocab", None)
+                                .unwrap();
+                        }
+                    })
+                })
+                .collect();
+            for writer in writers {
+                writer.join().unwrap();
+            }
+            drop(stop);
+            reader.join().unwrap()
+        });
+        assert!(complete_reads > 0, "the reader never saw a published file");
+        assert_eq!(std::fs::read(&destination).unwrap(), large);
+        assert_eq!(entries(&dir), vec!["vocab".to_string()]);
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_file_atomically_skips_a_taken_temp_name_without_removing_it() {
+        let dir = scratch_dir("taken");
+        let destination = dir.join("vocab");
+        // Another writer (a process with this id in another pid namespace, or
+        // a planted link) holds the first candidate name.
+        let victim = dir.join("victim");
+        std::fs::write(&victim, b"keep").unwrap();
+        let taken = temp_file_candidates(&destination).next().unwrap();
+        std::os::unix::fs::symlink(&victim, &taken).unwrap();
+
+        let body = b"rank data\n".repeat(16);
+        write_file_atomically(&body[..], &destination, "test://vocab", None).unwrap();
+        assert_eq!(std::fs::read(&destination).unwrap(), body);
+        assert_eq!(std::fs::read(&victim).unwrap(), b"keep");
+        assert!(std::fs::symlink_metadata(&taken).unwrap().file_type().is_symlink());
+        let mut expected = vec![
+            taken.file_name().unwrap().to_str().unwrap().to_string(),
+            "victim".to_string(),
+            "vocab".to_string(),
+        ];
+        expected.sort();
+        assert_eq!(entries(&dir), expected);
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn write_file_atomically_removes_stale_temp_files() {
+        let dir = scratch_dir("stale");
+        let destination = dir.join("vocab");
+        let stale = dir.join("vocab.1.0.tmp");
+        let live = dir.join("vocab.2.0.tmp");
+        let other = dir.join("other.1.0.tmp");
+        for path in [&stale, &live, &other] {
+            std::fs::write(path, b"partial").unwrap();
+        }
+        let now = SystemTime::now();
+        let age = |path: &Path, age: Duration| {
+            File::options()
+                .write(true)
+                .open(path)
+                .unwrap()
+                .set_modified(now - age)
+                .unwrap();
+        };
+        age(&stale, STALE_TEMP_FILE_AGE);
+        age(&live, STALE_TEMP_FILE_AGE / 2);
+
+        remove_stale_temp_files(&destination, now);
+        assert_eq!(entries(&dir), vec!["other.1.0.tmp", "vocab.2.0.tmp"]);
+
+        // A download sweeps before it writes.
+        age(&live, STALE_TEMP_FILE_AGE);
+        let body = b"rank data\n".repeat(16);
+        write_file_atomically(&body[..], &destination, "test://vocab", None).unwrap();
+        assert_eq!(entries(&dir), vec!["other.1.0.tmp", "vocab"]);
+
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

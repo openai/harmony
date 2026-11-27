@@ -886,3 +886,35 @@ fn test_parse_completion_with_invalid_content_token_errors_on_eos() {
             .with_channel("analysis");
     assert_eq!(parsed_message, &expected_message);
 }
+
+#[test]
+fn test_encode_with_special_tokens_fast_path_matches_general_path() {
+    let encoding = load_harmony_encoding(HarmonyEncodingName::HarmonyGptOss).unwrap();
+    let bpe = encoding.tokenizer();
+    let allowed = bpe.special_tokens();
+    assert!(!allowed.is_empty());
+
+    for special in &allowed {
+        let general = bpe.encode(special, &allowed).0;
+        assert_eq!(general.len(), 1, "{special}");
+        assert_eq!(
+            bpe.encode_with_special_tokens(special),
+            general,
+            "{special}"
+        );
+    }
+
+    for text in [
+        "",
+        "hello",
+        "<|start|>assistant",
+        " <|start|>",
+        "<|start|><|end|>",
+    ] {
+        assert_eq!(
+            bpe.encode_with_special_tokens(text),
+            bpe.encode(text, &allowed).0,
+            "{text:?}"
+        );
+    }
+}

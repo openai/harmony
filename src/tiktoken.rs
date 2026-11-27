@@ -515,6 +515,9 @@ impl CoreBPE {
     }
 
     pub fn encode_with_special_tokens(&self, text: &str) -> Vec<Rank> {
+        if let Some(&token) = self.special_tokens_encoder.get(text) {
+            return vec![token];
+        }
         let allowed_special = self.special_tokens();
         self.encode(text, &allowed_special).0
     }
